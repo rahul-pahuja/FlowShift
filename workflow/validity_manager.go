@@ -26,16 +26,18 @@ type ValidityManager struct {
 	logger        log.Logger
 	activeTimers  map[string]*ValidityTimer
 	timerSelector workflow.Selector
+	resetCallback func(sourceNodeID, dependentNodeID string)
 	mu            sync.RWMutex
 }
 
 // NewValidityManager creates a new validity manager
-func NewValidityManager(ctx workflow.Context, logger log.Logger) *ValidityManager {
+func NewValidityManager(ctx workflow.Context, logger log.Logger, resetCb func(string,string)) *ValidityManager {
 	return &ValidityManager{
 		ctx:           ctx,
 		logger:        logger,
 		activeTimers:  make(map[string]*ValidityTimer),
 		timerSelector: workflow.NewSelector(ctx),
+		resetCallback: resetCb,
 	}
 }
 
@@ -109,6 +111,11 @@ func (vm *ValidityManager) handleValidityTimerExpiry(timer *ValidityTimer) {
 	vm.mu.Lock()
 	delete(vm.activeTimers, timer.TimerID)
 	vm.mu.Unlock()
+
+	// Trigger reset callback if provided
+	if vm.resetCallback != nil {
+		vm.resetCallback(timer.SourceNodeID, timer.DependentNodeID)
+	}
 
 	// In a full implementation, this would trigger node resets
 	// For now, we just log the event

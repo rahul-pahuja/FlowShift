@@ -27,6 +27,7 @@ type DAGEngine struct {
 	readyQueue     chan string
 	metrics        *DAGMetrics
 	mu             sync.RWMutex
+	executionErr   error
 }
 
 // DAGMetrics holds execution metrics
@@ -60,7 +61,7 @@ func NewDAGEngine(ctx workflow.Context, config shared.WorkflowConfig) *DAGEngine
 	// Initialize components
 	engine.dependencyMgr = NewDependencyManager(config.Nodes, logger)
 	engine.signalMgr = NewSignalManager(ctx, logger)
-	engine.validityMgr = NewValidityManager(ctx, logger)
+	engine.validityMgr = NewValidityManager(ctx, logger, engine.handleValidityExpiryReset)
 	engine.nodeProcessor = NewNodeProcessor(ctx, logger)
 	engine.conditionEval = NewConditionEvaluator(ctx, logger)
 
@@ -261,8 +262,9 @@ func (e *DAGEngine) isNodeExpired(node shared.Node, status *shared.NodeStatus) b
 	}
 
 	expiryDuration := time.Duration(node.ExpirySeconds) * time.Second
-	scheduledTime := time.Unix(status.ScheduledTime, 0)
-	return workflow.Now(e.ctx).After(scheduledTime.Add(expiryDuration))
+	info := workflow.GetInfo(e.ctx)
+	startTime := info.WorkflowStartTime
+	return workflow.Now(e.ctx).After(startTime.Add(expiryDuration))
 }
 
 // handleExpiredNode processes an expired node
@@ -278,6 +280,10 @@ func (e *DAGEngine) handleExpiredNode(nodeID string, status *shared.NodeStatus) 
 	e.metrics.ExpiredNodes++
 
 	e.logger.Warn("Node expired before execution", zap.String("nodeID", nodeID))
+
+	if e.executionErr == nil {
+		e.executionErr = fmt.Errorf("node %s %s", nodeID, status.State)
+	}
 
 	// Propagate to dependents
 	return e.propagateToDependents(nodeID)
@@ -347,6 +353,10 @@ func (e *DAGEngine) handleActivityError(nodeID string, node shared.Node, status 
 	// Mark as completed and propagate
 	e.metrics.CompletedOrSkippedNodes++
 	e.propagateToDependents(nodeID)
+
+	if e.executionErr == nil {
+		e.executionErr = fmt.Errorf("node %s %s", nodeID, status.State)
+	}
 }
 
 // handleActivitySuccess processes successful activity completion
@@ -401,6 +411,7 @@ func (e *DAGEngine) processConditionalRouting(nodeID string, node shared.Node, a
 
 	e.logger.Info("Processing conditional routing", zap.String("nodeID", nodeID), zap.Int("numRules", len(node.NextNodeRules)))
 
+	triggered := make(map[string]bool)
 	for _, ruleRef := range node.NextNodeRules {
 		rule, exists := e.config.Rules[ruleRef.RuleID]
 		if !exists {
@@ -411,6 +422,22 @@ func (e *DAGEngine) processConditionalRouting(nodeID string, node shared.Node, a
 		if e.conditionEval.EvaluateCondition(rule.Expression, node.Params, activityOutput) {
 			e.logger.Info("Condition met for rule", zap.String("ruleID", ruleRef.RuleID), zap.String("targetNode", ruleRef.TargetNodeID))
 			e.dependencyMgr.DecrementDependency(ruleRef.TargetNodeID, nodeID, e.nodeStatuses, e.readyQueue, e.ctx)
+			triggered[ruleRef.TargetNodeID] = true
+		}
+	}
+
+	// After evaluating rules
+	for _, ruleRef := range node.NextNodeRules {
+		if !triggered[ruleRef.TargetNodeID] {
+			if st, ok := e.nodeStatuses[ruleRef.TargetNodeID]; ok && st.State == shared.NodeStatePending {
+				st.State = shared.NodeStateSkipped
+				e.mu.Lock()
+				e.metrics.CompletedOrSkippedNodes++
+				e.mu.Unlock()
+				e.nodeResults[ruleRef.TargetNodeID] = "SKIPPED"
+				// Propagate further so downstreams can progress
+				e.propagateToDependents(ruleRef.TargetNodeID)
+			}
 		}
 	}
 }
@@ -436,6 +463,10 @@ func (e *DAGEngine) handleNodeError(nodeID string, status *shared.NodeStatus, er
 	e.metrics.FailedNodes++
 
 	e.logger.Error("Node failed", zap.String("nodeID", nodeID), zap.Error(err))
+
+	if e.executionErr == nil {
+		e.executionErr = fmt.Errorf("node %s %s", nodeID, status.State)
+	}
 }
 
 // isExecutionComplete checks if the DAG execution is complete
@@ -477,5 +508,46 @@ func (e *DAGEngine) getExecutionResults(errAggregator error) (map[string]interfa
 		results[k] = v
 	}
 
+	if errAggregator == nil {
+		errAggregator = e.executionErr
+	}
+
 	return results, errAggregator
 }
+
+// handleValidityExpiryReset resets source and dependent nodes when a result validity timer fires
+func (e *DAGEngine) handleValidityExpiryReset(sourceNodeID, dependentNodeID string) {
+	e.logger.Warn("Resetting nodes due to result validity expiry",
+		zap.String("sourceNode", sourceNodeID),
+		zap.String("dependentNode", dependentNodeID))
+
+	e.mu.Lock()
+	// Reset source node
+	sourceStatus := e.nodeStatuses[sourceNodeID]
+	sourceStatus.Attempt++
+	sourceStatus.State = shared.NodeStatePending
+	sourceStatus.Error = nil
+	sourceStatus.Result = nil
+	e.metrics.CompletedOrSkippedNodes--
+	e.metrics.FailedNodes = max(0, e.metrics.FailedNodes-1)
+	e.mu.Unlock()
+
+	// Reset dependency counts for dependents of source node
+	e.dependencyMgr.ResetDependency(sourceNodeID, e.config.Nodes[sourceNodeID].Dependencies)
+
+	// Re-schedule source node
+	e.scheduleNode(sourceNodeID)
+
+	// Reset dependent node if provided
+	if dependentNodeID != "" {
+		depStatus := e.nodeStatuses[dependentNodeID]
+		if depStatus != nil {
+			depStatus.State = shared.NodeStatePending
+			depStatus.Error = nil
+			depStatus.Result = nil
+		}
+		e.dependencyMgr.ResetDependency(dependentNodeID, e.config.Nodes[dependentNodeID].Dependencies)
+	}
+}
+
+func max(a, b int) int { if a>b {return a}; return b }
