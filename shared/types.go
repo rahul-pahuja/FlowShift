@@ -4,11 +4,18 @@ package shared
 type NodeType string
 
 const (
-	NodeTypeAsync NodeType = "async"
-	NodeTypeWait  NodeType = "wait"
-	NodeTypeSync  NodeType = "sync"
+	NodeTypeAsync       NodeType = "async"
+	NodeTypeWait        NodeType = "wait"
+	NodeTypeSync        NodeType = "sync"
+	NodeTypeUserInput   NodeType = "user_input"
 	// Add other node types as needed
 )
+
+// NextNodeRule defines a condition and a target node for conditional pathing
+type NextNodeRule struct {
+	Condition    string `json:"condition"`    // e.g., "output.status == 'success'" or "params.branch == 'A'"
+	TargetNodeID string `json:"targetNodeId"` // The ID of the next node to execute if condition is met
+}
 
 // NodeState defines the current state of a node in the workflow
 type NodeState string
@@ -28,12 +35,15 @@ type Node struct {
 	ID            string                 `json:"id"`
 	Type          NodeType               `json:"type"`
 	ActivityName  string                 `json:"activityName"`
-	Params        map[string]interface{} `json:"params"`
-	Dependencies  []string               `json:"dependencies"`
-	TTLSeconds    int                    `json:"ttlSeconds"`    // Time-to-live for the activity execution (0 for no TTL)
-	ExpirySeconds int                    `json:"expirySeconds"` // Expiry time for the node itself (0 for no expiry)
-	RedoCondition string                 `json:"redoCondition"` // e.g., "output.status == 'failed'"
-	SkipCondition string                 `json:"skipCondition"` // e.g., "input.priority < 5"
+	Params                map[string]interface{} `json:"params"`
+	Dependencies          []string               `json:"dependencies"` // Prerequisites for this node to start
+	ActivityTimeoutSeconds int                    `json:"activityTimeoutSeconds"` // Timeout for the node's activity execution
+	ResultValiditySeconds int                    `json:"resultValiditySeconds"`  // How long the node's result is considered valid
+	ExpirySeconds         int                    `json:"expirySeconds"`          // Expiry for the node itself before it starts (original meaning)
+	RedoCondition         string                 `json:"redoCondition"`          // e.g., "output.status == 'failed'"
+	SkipCondition         string                 `json:"skipCondition"`          // e.g., "input.priority < 5"
+	NextNodeRules         []NextNodeRule         `json:"nextNodeRules"`          // Rules for conditional routing to next nodes
+	SignalName            string                 `json:"signalName"`             // Signal name for user_input type nodes
 }
 
 // WorkflowConfig defines the structure of the workflow to be executed

@@ -4,35 +4,61 @@ import (
 	"dynamicworkflow/shared"
 	"encoding/json"
 	"fmt"
+	"gopkg.in/yaml.v3" // Added for YAML parsing
 )
 
-// LoadWorkflowConfigFromJSONString parses a JSON string into a WorkflowConfig struct.
-// In a real application, this JSON might come from a file, a database, or an API.
-func LoadWorkflowConfigFromJSONString(jsonString string) (shared.WorkflowConfig, error) {
-	var config shared.WorkflowConfig
-	err := json.Unmarshal([]byte(jsonString), &config)
-	if err != nil {
-		return shared.WorkflowConfig{}, fmt.Errorf("failed to unmarshal workflow config JSON: %w", err)
-	}
-
-	// Basic validation (can be expanded)
+// validateWorkflowConfig performs basic validation on the loaded config.
+func validateWorkflowConfig(config *shared.WorkflowConfig) error {
 	if len(config.Nodes) == 0 {
-		return shared.WorkflowConfig{}, fmt.Errorf("workflow config must contain at least one node")
+		return fmt.Errorf("workflow config must contain at least one node")
 	}
 	if len(config.StartNodeIDs) == 0 {
-		return shared.WorkflowConfig{}, fmt.Errorf("workflow config must specify at least one StartNodeID")
+		return fmt.Errorf("workflow config must specify at least one StartNodeID")
 	}
 	for _, startID := range config.StartNodeIDs {
 		if _, ok := config.Nodes[startID]; !ok {
-			return shared.WorkflowConfig{}, fmt.Errorf("StartNodeID '%s' not found in nodes definition", startID)
+			return fmt.Errorf("StartNodeID '%s' not found in nodes definition", startID)
 		}
 	}
-	// Could add more validation: e.g. check for circular dependencies, valid activity names etc.
+	// TODO: Add more validation:
+	// - Check for circular dependencies in static Dependencies.
+	// - Validate that ActivityName is non-empty for relevant node types.
+	// - Validate that SignalName is non-empty for UserInput node types.
+	// - Validate that TargetNodeID in NextNodeRules exist in Nodes map.
+	// - Ensure dependencies listed in Node.Dependencies exist in Nodes map.
+	return nil
+}
 
+// LoadWorkflowConfigFromJSONBytes parses JSON bytes into a WorkflowConfig struct.
+func LoadWorkflowConfigFromJSONBytes(jsonData []byte) (shared.WorkflowConfig, error) {
+	var config shared.WorkflowConfig
+	err := json.Unmarshal(jsonData, &config)
+	if err != nil {
+		return shared.WorkflowConfig{}, fmt.Errorf("failed to unmarshal workflow config JSON: %w", err)
+	}
+	if err := validateWorkflowConfig(&config); err != nil {
+		return shared.WorkflowConfig{}, fmt.Errorf("invalid workflow config: %w", err)
+	}
 	return config, nil
 }
 
+// LoadWorkflowConfigFromYAMLBytes parses YAML bytes into a WorkflowConfig struct.
+func LoadWorkflowConfigFromYAMLBytes(yamlData []byte) (shared.WorkflowConfig, error) {
+	var config shared.WorkflowConfig
+	err := yaml.Unmarshal(yamlData, &config)
+	if err != nil {
+		return shared.WorkflowConfig{}, fmt.Errorf("failed to unmarshal workflow config YAML: %w", err)
+	}
+	if err := validateWorkflowConfig(&config); err != nil {
+		return shared.WorkflowConfig{}, fmt.Errorf("invalid workflow config: %w", err)
+	}
+	return config, nil
+}
+
+
 // GetSampleWorkflowConfigJSON returns a sample JSON string for a workflow configuration.
+// DEPRECATED: Prefer using config.yaml and LoadWorkflowConfigFromYAMLBytes.
+// This is kept for potential compatibility or specific JSON use cases.
 // This is useful for testing and demonstration.
 func GetSampleWorkflowConfigJSON() string {
 	// Sample DAG:

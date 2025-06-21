@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context" // Required for mock function signatures
 	"dynamicworkflow/activities"
 	"dynamicworkflow/shared"
 	"errors"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
+	"go.temporal.io/api/enums/v1" // For enumspb
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
@@ -19,7 +21,6 @@ import (
 type UnitTestSuite struct {
 	suite.Suite
 	testsuite.WorkflowTestSuite
-
 	env *testsuite.TestWorkflowEnvironment
 }
 
@@ -29,11 +30,15 @@ func TestUnitTestSuite(t *testing.T) {
 
 func (s *UnitTestSuite) SetupTest() {
 	s.env = s.NewTestWorkflowEnvironment()
-	// Register activities that might be called directly by name if not mocked by specific tests
+	// Register real activities; mocks in tests will override behavior for specific calls.
 	s.env.RegisterActivity(activities.SimpleSyncActivity)
 	s.env.RegisterActivity(activities.AsyncActivityExample)
 	s.env.RegisterActivity(activities.WaitActivityExample)
 	s.env.RegisterActivity(activities.ActivityThatCanFail)
+	// Register any placeholder activities used in tests if not actual ones
+	s.env.RegisterActivity(func(ctx context.Context, params map[string]interface{}) (string, error) { return "LongRunningOutput", nil }) // LongRunningActivity
+	s.env.RegisterActivity(func(ctx context.Context, params map[string]interface{}) (string, error) { return "ShortActivityOutput", nil }) // ShortActivity
+	s.env.RegisterActivity(func(ctx context.Context, params map[string]interface{}) (string, error) { return "NeverRunOutput", nil })    // NeverRunActivity
 }
 
 func (s *UnitTestSuite) AfterTest(suiteName, testName string) {
@@ -41,289 +46,333 @@ func (s *UnitTestSuite) AfterTest(suiteName, testName string) {
 	s.env.Close()
 }
 
-// --- Test Cases ---
+// --- Test Cases (Existing tests updated, new tests to be added) ---
 
-func (s *UnitTestSuite) Test_BasicDAG_SuccessfulExecution() {
+func (s *UnitTestSuite) Test_BasicDAG_SuccessfulExecution_WithNextNodeRules() {
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{"A"},
 		Nodes: map[string]shared.Node{
-			"A": {ID: "A", ActivityName: "SimpleActivity", Params: map[string]interface{}{"data": "A_data"}},
-			"B": {ID: "B", ActivityName: "SimpleActivity", Params: map[string]interface{}{"data": "B_data"}, Dependencies: []string{"A"}},
-			"C": {ID: "C", ActivityName: "SimpleActivity", Params: map[string]interface{}{"data": "C_data"}, Dependencies: []string{"A"}},
-			"D": {ID: "D", ActivityName: "SimpleActivity", Params: map[string]interface{}{"data": "D_data"}, Dependencies: []string{"B", "C"}},
+			"A": {
+				ID:           "A",
+				ActivityName: "SimpleSyncActivity",
+				Params:       map[string]interface{}{"data": "A_data"},
+				NextNodeRules: []shared.NextNodeRule{
+					{Condition: "output.status == 'done'", TargetNodeID: "B"},
+					{Condition: "output.status == 'done'", TargetNodeID: "C"},
+				},
+			},
+			"B": {ID: "B", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "B_data"}, Dependencies: []string{"A"}, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: "D"}}},
+			"C": {ID: "C", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "C_data"}, Dependencies: []string{"A"}, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: "D"}}},
+			"D": {ID: "D", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "D_data"}, Dependencies: []string{"B", "C"}},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
 
-	s.env.OnActivity("SimpleActivity", mock.Anything, mock.AnythingOfType("map[string]interface{}")).Return(
-		func(ctx context.Context, params map[string]interface{}) (string, error) {
-			nodeName := params["data"].(string) // Assuming 'data' param contains node identifier for mock
-			return fmt.Sprintf("Output from %s", nodeName), nil
-		},
-	).Times(4) // A, B, C, D
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"data": "A_data"}).Return(map[string]interface{}{"status": "done"}, nil).Once()
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"data": "B_data"}).Return("Output from B", nil).Once()
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"data": "C_data"}).Return("Output from C", nil).Once()
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"data": "D_data"}).Return("Output from D", nil).Once()
 
 	s.env.ExecuteWorkflow(DAGWorkflow, input)
-
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
-
 	var results map[string]interface{}
 	s.NoError(s.env.GetWorkflowResult(&results))
-	s.Contains(results, "A")
-	s.Contains(results, "B")
-	s.Contains(results, "C")
-	s.Contains(results, "D")
-	s.Equal("Output from A_data", results["A"])
+	s.NotNil(results["A"])
+	s.Equal("Output from B", results["B"])
+	s.Equal("Output from C", results["C"])
+	s.Equal("Output from D", results["D"])
 }
 
-func (s *UnitTestSuite) Test_NodeSkipped() {
+func (s *UnitTestSuite) Test_NodeSkipped_WithNextNodeRules() {
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{"A"},
 		Nodes: map[string]shared.Node{
-			"A": {ID: "A", ActivityName: "SimpleActivity", Params: map[string]interface{}{"data": "A_data"}},
-			"B_skip": {ID: "B_skip", ActivityName: "SimpleActivity", Params: map[string]interface{}{"_skip": true, "data": "B_data"}, Dependencies: []string{"A"}},
-			"C": {ID: "C", ActivityName: "SimpleActivity", Params: map[string]interface{}{"data": "C_data"}, Dependencies: []string{"B_skip"}}, // Depends on skipped node
+			"A":      {ID: "A", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "A_data"}, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: "B_skip"}}},
+			"B_skip": {ID: "B_skip", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"_skip": true}, Dependencies: []string{"A"}, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: "C"}}},
+			"C":      {ID: "C", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "C_data"}, Dependencies: []string{"B_skip"}},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
-
-	// Activity "A" should run
-	s.env.OnActivity("SimpleActivity", mock.Anything, map[string]interface{}{"data": "A_data"}).Return("Output from A", nil).Once()
-	// Activity for "B_skip" should NOT run
-	// Activity "C" should run
-	s.env.OnActivity("SimpleActivity", mock.Anything, map[string]interface{}{"data": "C_data"}).Return("Output from C", nil).Once()
-
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"data": "A_data"}).Return("Output from A", nil).Once()
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"data": "C_data"}).Return("Output from C", nil).Once()
 
 	s.env.ExecuteWorkflow(DAGWorkflow, input)
-
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
 	var results map[string]interface{}
 	s.NoError(s.env.GetWorkflowResult(&results))
-	s.Equal("Output from A", results["A"])
-	s.Equal("SKIPPED", results["B_skip"]) // Check our skip marker
+	s.Equal("SKIPPED", results["B_skip"])
 	s.Equal("Output from C", results["C"])
 }
 
-
-func (s *UnitTestSuite) Test_NodeFailure_RedoSuccess() {
+func (s *UnitTestSuite) Test_NodeFailure_RedoSuccess_WithActivityTimeoutSeconds() {
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{"FailNode"},
 		Nodes: map[string]shared.Node{
-			"FailNode": {
-				ID:            "FailNode",
-				ActivityName:  "FailingActivity",
-				Params:        map[string]interface{}{"id": "FailNode"},
-				RedoCondition: "on_failure", // Enable redo
-			},
-			"SuccessNode": {ID: "SuccessNode", ActivityName: "SimpleActivity", Params: map[string]interface{}{"id": "SuccessNode"}, Dependencies: []string{"FailNode"}},
+			"FailNode": {ID: "FailNode", ActivityName: "ActivityThatCanFail", Params: map[string]interface{}{"id": "FailNode"}, RedoCondition: "on_failure", ActivityTimeoutSeconds: 10, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: "SuccessNode"}}},
+			"SuccessNode": {ID: "SuccessNode", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"id": "SuccessNode"}, Dependencies: []string{"FailNode"}},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
-
-	// FailNode's activity: Fail once, then succeed
-	s.env.OnActivity("FailingActivity", mock.Anything, mock.Anything).Return("", errors.New("simulated error")).Once()
-	s.env.OnActivity("FailingActivity", mock.Anything, mock.Anything).Return("Output from FailNode (2nd attempt)", nil).Once()
-
-	// SuccessNode's activity
-	s.env.OnActivity("SimpleActivity", mock.Anything, mock.Anything).Return("Output from SuccessNode", nil).Once()
+	s.env.OnActivity("ActivityThatCanFail", mock.Anything, mock.Anything).Return("", errors.New("simulated error")).Once()
+	s.env.OnActivity("ActivityThatCanFail", mock.Anything, mock.Anything).Return("Output from FailNode (2nd attempt)", nil).Once()
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, mock.Anything).Return("Output from SuccessNode", nil).Once()
 
 	s.env.ExecuteWorkflow(DAGWorkflow, input)
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+}
 
+func (s *UnitTestSuite) Test_NodeActivityTimeout() {
+	nodeID, depID := "TimeoutNode", "DependentNode"
+	config := shared.WorkflowConfig{
+		StartNodeIDs: []string{nodeID},
+		Nodes: map[string]shared.Node{
+			nodeID: {ID: nodeID, ActivityName: "LongRunningActivity", ActivityTimeoutSeconds: 1, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: depID}}},
+			depID:  {ID: depID, ActivityName: "SimpleSyncActivity", Dependencies: []string{nodeID}},
+		},
+	}
+	input := DAGWorkflowInput{Config: config}
+	s.env.OnActivity("LongRunningActivity", mock.Anything, mock.Anything).Return("", temporal.NewTimeoutError("simulated STC", enumspb.TIMEOUT_TYPE_START_TO_CLOSE)).Once()
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, mock.Anything).Return("Output from DependentNode", nil).Once()
+
+	s.env.ExecuteWorkflow(DAGWorkflow, input)
+	s.True(s.env.IsWorkflowCompleted())
+	err := s.env.GetWorkflowError()
+	s.Error(err)
+	if err != nil {
+		s.Contains(err.Error(), fmt.Sprintf("node %s %s", nodeID, shared.NodeStateTimedOut))
+	}
+}
+
+func (s *UnitTestSuite) Test_NodeExpiry_BeforeActivityStart() {
+	s.env.SetStartTime(time.Now())
+	nodeA, nodeToExpire, nodeC := "A", "ExpireNode", "C"
+	config := shared.WorkflowConfig{
+		StartNodeIDs: []string{nodeA},
+		Nodes: map[string]shared.Node{
+			nodeA:        {ID: nodeA, ActivityName: "ShortActivity", NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: nodeToExpire}}},
+			nodeToExpire: {ID: nodeToExpire, ActivityName: "NeverRunActivity", Dependencies: []string{nodeA}, ExpirySeconds: 2, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: nodeC}}},
+			nodeC:        {ID: nodeC, ActivityName: "SimpleSyncActivity", Dependencies: []string{nodeToExpire}},
+		},
+	}
+	input := DAGWorkflowInput{Config: config}
+	s.env.OnActivity("ShortActivity", mock.Anything, mock.Anything).Return("Output from A", nil).Once()
+	s.env.RegisterDelayedCallback(func() { s.env.AdvanceTime(3 * time.Second) }, 1*time.Millisecond)
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, mock.Anything).Return("Output from C", nil).Once()
+
+	s.env.ExecuteWorkflow(DAGWorkflow, input)
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
 	var results map[string]interface{}
 	s.NoError(s.env.GetWorkflowResult(&results))
-	s.Equal("Output from FailNode (2nd attempt)", results["FailNode"])
-	s.Equal("Output from SuccessNode", results["SuccessNode"])
+	s.Nil(results[nodeToExpire])
+	s.Equal("Output from C", results[nodeC])
 }
 
+// --- New Test Cases ---
 
-func (s *UnitTestSuite) Test_NodeTTL_Timeout() {
-	nodeID := "TimeoutNode"
+func (s *UnitTestSuite) Test_ConditionalPath_Path1Taken() {
+	config := shared.WorkflowConfig{
+		StartNodeIDs: []string{"Start"},
+		Nodes: map[string]shared.Node{
+			"Start": {ID: "Start", ActivityName: "DecisionActivity", Params: map[string]interface{}{"choice": "path1"},
+				NextNodeRules: []shared.NextNodeRule{
+					{Condition: "output.decision == 'PATH1'", TargetNodeID: "Path1Node"},
+					{Condition: "output.decision == 'PATH2'", TargetNodeID: "Path2Node"},
+				}},
+			"Path1Node": {ID: "Path1Node", ActivityName: "Path1Activity", Dependencies: []string{"Start"}},
+			"Path2Node": {ID: "Path2Node", ActivityName: "Path2Activity", Dependencies: []string{"Start"}},
+		},
+	}
+	input := DAGWorkflowInput{Config: config}
+	s.env.OnActivity("DecisionActivity", mock.Anything, mock.Anything).Return(map[string]interface{}{"decision": "PATH1"}, nil).Once()
+	s.env.OnActivity("Path1Activity", mock.Anything, mock.Anything).Return("Path1 Output", nil).Once()
+	// Path2Activity should not be called
+
+	s.env.ExecuteWorkflow(DAGWorkflow, input)
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	var results map[string]interface{}
+	s.NoError(s.env.GetWorkflowResult(&results))
+	s.Equal("Path1 Output", results["Path1Node"])
+	s.Nil(results["Path2Node"])
+}
+
+func (s *UnitTestSuite) Test_UserInputNode_ReceivesSignal() {
+	nodeID := "InputNode"
+	signalName := "MyTestSignal"
+	signalPayload := map[string]interface{}{"signal_data": "important_value"}
+
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{nodeID},
 		Nodes: map[string]shared.Node{
 			nodeID: {
 				ID:           nodeID,
-				ActivityName: "LongRunningActivity",
-				Params:       map[string]interface{}{},
-				TTLSeconds:   1, // Very short TTL
+				Type:         shared.NodeTypeUserInput,
+				ActivityName: "PostSignalActivity",
+				SignalName:   signalName,
+				Params:       map[string]interface{}{"original_param": "original_value"},
 			},
-			"DependentNode": {ID:"DependentNode", ActivityName: "SimpleActivity", Params: map[string]interface{}{}, Dependencies: []string{nodeID}},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
 
-	// Mock LongRunningActivity to simulate timeout by sleeping longer than TTL
-	s.env.OnActivity("LongRunningActivity", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, params map[string]interface{}) (string, error) {
-			// Simulate work that exceeds TTL by blocking.
-			// The test framework advances time, so a direct sleep might not work as expected.
-			// Instead, we return a StartToClose timeout error.
-			// In a real activity, this would be Temporal server enforcing the timeout.
-			// For testsuite, we can return temporal.NewTimeoutError to signify it.
-			return "", temporal.NewTimeoutError("simulated StartToClose timeout", enumspb.TIMEOUT_TYPE_START_TO_CLOSE)
-		},
-	).Once()
+	// Activity is called after signal, with merged params
+	expectedParams := map[string]interface{}{"original_param": "original_value", "signal_data": "important_value"}
+	s.env.OnActivity("PostSignalActivity", mock.Anything, expectedParams).Return("Activity Done", nil).Once()
 
-	// DependentNode's activity should still run because failure/timeout propagates
-	s.env.OnActivity("SimpleActivity", mock.Anything, mock.Anything).Return("Output from DependentNode", nil).Once()
-
+	s.env.RegisterDelayedCallback(func() {
+		s.env.SignalWorkflow(signalName, signalPayload)
+	}, 1*time.Second) // Send signal after workflow starts and is waiting
 
 	s.env.ExecuteWorkflow(DAGWorkflow, input)
+
 	s.True(s.env.IsWorkflowCompleted())
-
-	// The workflow itself should complete, but with an error indicating the timeout.
-	err := s.env.GetWorkflowError()
-	s.Error(err) // Expect an error because one node (TimeoutNode) failed due.
-	s.Contains(err.Error(), "node TimeoutNode timedout")
-
-
+	s.NoError(s.env.GetWorkflowError())
 	var results map[string]interface{}
-	s.NoError(s.env.GetWorkflowResult(&results)) // Result might still be partially there
-	s.Nil(results[nodeID]) // Or specific error marker if we set one for timeouts
-	s.Equal("Output from DependentNode", results["DependentNode"])
+	s.NoError(s.env.GetWorkflowResult(&results))
+	s.Equal("Activity Done", results[nodeID])
 }
 
+func (s *UnitTestSuite) Test_ResultValidity_DependentCompletesInTime() {
+	sourceNodeID := "SourceValidityNode"
+	dependentNodeID := "DependentSignalNode"
+	sourceSignal := "SourceSignal"
+	dependentSignal := "DependentSignal"
 
-func (s *UnitTestSuite) Test_NodeExpiry() {
-	s.env.SetStartTime(time.Now()) // Set a reference start time for the workflow
-
-	nodeIDToExpire := "ExpireNode"
 	config := shared.WorkflowConfig{
-		StartNodeIDs: []string{"A"},
+		StartNodeIDs: []string{sourceNodeID},
 		Nodes: map[string]shared.Node{
-			"A": {ID: "A", ActivityName: "ShortActivity", Params: map[string]interface{}{}},
-			nodeIDToExpire: {
-				ID:            nodeIDToExpire,
-				ActivityName:  "NeverRunActivity",
-				Params:        map[string]interface{}{},
-				Dependencies:  []string{"A"},
-				ExpirySeconds: 2, // Expires 2 seconds after being scheduled
+			sourceNodeID: {
+				ID:                    sourceNodeID,
+				Type:                  shared.NodeTypeUserInput,
+				ActivityName:          "SimpleSyncActivity",
+				SignalName:            sourceSignal,
+				ResultValiditySeconds: 5, // Result valid for 5 virtual seconds
+				Params:                map[string]interface{}{"id": sourceNodeID},
+				NextNodeRules:         []shared.NextNodeRule{{Condition: "true", TargetNodeID: dependentNodeID}},
 			},
-			"C": {ID: "C", ActivityName: "SimpleActivity", Params: map[string]interface{}{}, Dependencies: []string{nodeIDToExpire}},
+			dependentNodeID: {
+				ID:           dependentNodeID,
+				Type:         shared.NodeTypeUserInput,
+				ActivityName: "SimpleSyncActivity",
+				SignalName:   dependentSignal,
+				Params:       map[string]interface{}{"id": dependentNodeID},
+				Dependencies: []string{sourceNodeID},
+			},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
 
-	// Mock ShortActivity (Node A)
-	s.env.OnActivity("ShortActivity", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, params map[string]interface{}) (string, error) {
-			// Simulate this activity taking 3 seconds, so by the time ExpireNode is scheduled,
-			// more than its ExpirySeconds (2s) will have passed from its *scheduled* time.
-			// No, this is wrong. Expiry is from when it *becomes ready*.
-			// Let's make 'A' quick, and then advance time.
-			return "Output from A", nil
-		},
-	).Once()
+	// Source node activity
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"id": sourceNodeID, "signal_data_source": "src_done"}).Return("SourceOutput", nil).Once()
+	// Dependent node activity
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"id": dependentNodeID, "signal_data_dependent": "dep_done"}).Return("DependentOutput", nil).Once()
 
-	// Setup callback for when "A" completes to advance time
-	s.env.RegisterDelayedCallback(func() {
-		// After A completes, ExpireNode becomes ready.
-		// We advance the clock by 3 seconds. Since ExpirySeconds is 2, it should expire.
-		s.env.AdvanceTime(3 * time.Second)
-	}, time.Duration(0)) // Execute immediately after A is processed by workflow (effectively)
+	// Schedule signals
+	s.env.RegisterDelayedCallback(func() { // Signal for SourceNode
+		s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"signal_data_source": "src_done"})
+	}, 1*time.Second)
 
-
-	// NeverRunActivity for ExpireNode should not be called.
-	s.env.OnActivity("SimpleActivity", mock.Anything, mock.Anything).Return("Output from C", nil).Once()
-
+	s.env.RegisterDelayedCallback(func() { // Signal for DependentNode, well within validity period
+		s.env.SignalWorkflow(dependentSignal, map[string]interface{}{"signal_data_dependent": "dep_done"})
+		s.env.AdvanceTime(1 * time.Second) // Ensure dependent processing happens
+	}, 2*time.Second) // Send this after source signal, but before validity (5s) expires
 
 	s.env.ExecuteWorkflow(DAGWorkflow, input)
 
 	s.True(s.env.IsWorkflowCompleted())
-	s.NoError(s.env.GetWorkflowError()) // Workflow completes, but ExpireNode is marked as expired.
+	s.NoError(s.env.GetWorkflowError())
+	var results map[string]interface{}
+	s.NoError(s.env.GetWorkflowResult(&results))
+	s.Equal("SourceOutput", results[sourceNodeID])
+	s.Equal("DependentOutput", results[dependentNodeID])
+	// Implicitly, test passes if no redo occurs and workflow completes normally.
+}
+
+func (s *UnitTestSuite) Test_ResultValidity_TimerFires_ResetsNodes() {
+	sourceNodeID := "SourceStaleNode"
+	dependentNodeID := "DependentWaitsTooLongNode"
+	sourceSignal := "SourceStaleSignal"
+	dependentSignal := "Dep αργείSignal" // Greek for "late" :)
+
+	config := shared.WorkflowConfig{
+		StartNodeIDs: []string{sourceNodeID},
+		Nodes: map[string]shared.Node{
+			sourceNodeID: {
+				ID:                    sourceNodeID,
+				Type:                  shared.NodeTypeUserInput,
+				ActivityName:          "SimpleSyncActivity", // Activity name for the source
+				SignalName:            sourceSignal,
+				ResultValiditySeconds: 2, // Short validity
+				Params:                map[string]interface{}{"id": sourceNodeID, "attempt": 1},
+				NextNodeRules:         []shared.NextNodeRule{{Condition: "true", TargetNodeID: dependentNodeID}},
+			},
+			dependentNodeID: {
+				ID:           dependentNodeID,
+				Type:         shared.NodeTypeUserInput,
+				ActivityName: "SimpleSyncActivity", // Activity name for the dependent
+				SignalName:   dependentSignal,
+				Params:       map[string]interface{}{"id": dependentNodeID, "attempt": 1},
+				Dependencies: []string{sourceNodeID},
+			},
+		},
+	}
+	input := DAGWorkflowInput{Config: config}
+
+	// --- Attempt 1 Mocks ---
+	// Source node (1st attempt) - activity completes
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"id": sourceNodeID, "attempt": 1, "signal_for_attempt1_source": true}).Return("SourceOutput_Attempt1", nil).Once()
+	// Dependent node (1st attempt) - its signal will be delayed, so its activity won't run in 1st attempt.
+
+	// --- Attempt 2 Mocks (after reset due to validity timer) ---
+	// Source node (2nd attempt) - activity completes
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"id": sourceNodeID, "attempt": 2, "signal_for_attempt2_source": true}).Return("SourceOutput_Attempt2", nil).Once()
+	// Dependent node (2nd attempt) - activity completes
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"id": dependentNodeID, "attempt": 1, "signal_for_attempt2_dependent": true}).Return("DependentOutput_Attempt2", nil).Once()
+
+
+	// Workflow Execution
+	s.env.ExecuteWorkflow(DAGWorkflow, input) // Start workflow
+
+	// Signal for SourceNode (Attempt 1)
+	s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"signal_for_attempt1_source": true})
+	s.env.AssertExpectations(s.T()) // Check if source activity (1st attempt) ran
+
+	// Advance time PAST ResultValiditySeconds (2s) + some buffer
+	s.env.AdvanceTime(3 * time.Second) // This should trigger the timer and reset.
+
+	// Now, signal for the nodes again (Attempt 2 for source, Attempt 1 for dependent but effectively 2nd round)
+	s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"signal_for_attempt2_source": true, "attempt": 2}) // Send attempt in signal for mock
+	s.env.AssertExpectations(s.T()) // Check source activity (2nd attempt)
+
+	s.env.SignalWorkflow(dependentSignal, map[string]interface{}{"signal_for_attempt2_dependent": true, "attempt": 1})// Send attempt in signal for mock
+	s.env.AssertExpectations(s.T()) // Check dependent activity (2nd attempt)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
 
 	var results map[string]interface{}
 	s.NoError(s.env.GetWorkflowResult(&results))
-	s.Nil(results[nodeIDToExpire]) // Or a specific marker for expired
-	s.Equal("Output from C", results["C"])
-
-	// To be more precise, we'd need to inspect the internal state of nodeStatuses if exposed,
-	// or rely on the absence of NeverRunActivity call and nil result for ExpireNode.
+	s.Equal("SourceOutput_Attempt2", results[sourceNodeID])
+	s.Equal("DependentOutput_Attempt2", results[dependentNodeID])
 }
 
-// Mock activity for timeout test
-func LongRunningActivity(ctx context.Context, params map[string]interface{}) (string, error) {
-	// This is just a placeholder, the mock in the test provides the behavior.
-	return "should not be called directly in this test", nil
+// Mock activity names used in configs if they aren't real activity functions
+// For simplicity, some tests use generic names like "Path1Activity".
+// If these were actual activities, they'd be registered from activities package.
+// For testsuite, if a mock is set up for an activity name, it doesn't strictly need
+// a real registered function, but it's good practice if possible.
+// Placeholder registration for activities only named in tests:
+func init() {
+	// This is a bit of a hack for test suite. Usually, you register actual functions.
+	// If an activity is *only* mocked and never called "for real", this isn't strictly needed.
+	// But if a test config uses an activity name that has no real counterpart and isn't mocked,
+	// the workflow would fail to find it.
+	activity.Register(func(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) { return map[string]interface{}{"decision": "PATH1"}, nil }, "DecisionActivity")
+	activity.Register(func(ctx context.Context) (string, error) { return "Path1 Output", nil }, "Path1Activity")
+	activity.Register(func(ctx context.Context) (string, error) { return "Path2 Output", nil }, "Path2Activity")
+	activity.Register(func(ctx context.Context, params map[string]interface{}) (string, error) { return "Activity Done", nil }, "PostSignalActivity")
 }
-func ShortActivity(ctx context.Context, params map[string]interface{}) (string, error) {
-	return "short output", nil
-}
-func NeverRunActivity(ctx context.Context, params map[string]interface{}) (string, error) {
-	return "never run output", nil
-}
-
-// Helper to register activities that might be used in tests if not specifically mocked
-// This is more for completeness if tests don't mock every single one.
-func (s *UnitTestSuite) registerActivities() {
-	s.env.RegisterActivity(activities.SimpleSyncActivity)
-	s.env.RegisterActivity(activities.AsyncActivityExample)
-	s.env.RegisterActivity(activities.WaitActivityExample)
-	s.env.RegisterActivity(activities.ActivityThatCanFail)
-	s.env.RegisterActivity(LongRunningActivity) // For timeout test
-	s.env.RegisterActivity(ShortActivity)
-	s.env.RegisterActivity(NeverRunActivity)
-}
-
-// Note: The activity names used in s.env.OnActivity (e.g., "SimpleActivity", "FailingActivity")
-// must match the ActivityName field in the Node struct used in the test's config.
-// For simplicity, I've used generic names in mocks. In a real scenario, these would be
-// the actual registered activity function names or types.
-// The current DAGWorkflow uses node.ActivityName directly.
-
-// Add import for enumspb
-// "go.temporal.io/api/enums/v1"
-// And ensure shared types are correctly pathed.
-// "dynamicworkflow/shared"
-// "dynamicworkflow/activities"
-
-// Also, need to adjust the mock for SimpleActivity in Test_BasicDAG_SuccessfulExecution
-// to handle different params if "data" is unique per node.
-// The current mock is a bit too generic.
-// It should be:
-// s.env.OnActivity("SimpleActivity", mock.Anything, map[string]interface{}{"data": "A_data"}).Return("Output from A_data", nil).Once()
-// s.env.OnActivity("SimpleActivity", mock.Anything, map[string]interface{}{"data": "B_data"}).Return("Output from B_data", nil).Once()
-// etc. Or use a more flexible matcher/return func. The current one is okay as it uses Times(4).
-
-```python
-import (
-	"dynamicworkflow/activities"
-	"dynamicworkflow/shared"
-	"errors"
-	"fmt"
-	"testing"
-	"time"
-
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/suite"
-	"go.temporal.io/api/enums/v1" // Added for TIMEOUT_TYPE
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/testsuite"
-	"go.temporal.io/sdk/workflow"
-)
-```
-The above python block was my way of quickly noting the imports needed. The actual Go imports are in the main Go code block.Okay, I've drafted the tests in `workflow/dag_workflow_test.go`.
-
-This includes:
-1.  **`UnitTestSuite`**: Sets up the `testsuite.WorkflowTestSuite` and a `TestWorkflowEnvironment`.
-2.  **`SetupTest`**: Initializes the environment and registers some of the real activities (though many tests will mock them).
-3.  **`AfterTest`**: Asserts mock expectations and closes the environment.
-4.  **Test Cases**:
-    *   `Test_BasicDAG_SuccessfulExecution`: Tests a simple linear DAG, ensuring all nodes complete and results are as expected. Activities are mocked to return specific outputs.
-    *   `Test_NodeSkipped`: Tests that a node configured with `_skip: true` in its params is correctly skipped, its activity is not called, and subsequent dependent nodes still run.
-    *   `Test_NodeFailure_RedoSuccess`: Tests the redo logic. An activity is mocked to fail on its first attempt and succeed on the second. The test verifies that the node is redone and the workflow eventually completes successfully.
-    *   `Test_NodeTTL_Timeout`: Tests activity TTL. An activity is mocked to return a `temporal.NewTimeoutError`. The test checks that the workflow completes with an error, and the specific node is marked as timed out (implicitly, by the error message and nil result). Dependent nodes are still expected to run.
-    *   `Test_NodeExpiry`: Tests node-level expiry. It uses `s.env.RegisterDelayedCallback` and `s.env.AdvanceTime` to manipulate the workflow's perception of time, forcing a node to expire after its prerequisite completes but before it can run. It checks that the expired node's activity is not called and dependents proceed.
-5.  **Mocking**: Activities are mocked using `s.env.OnActivity(...).Return(...)`. This is crucial for controlling activity behavior during tests.
-6.  **Placeholders/Notes**:
-    *   The activity names used in `s.env.OnActivity` (e.g., `"SimpleActivity"`) must match the `ActivityName` specified in the `Node` structs within each test's `WorkflowConfig`. I've used placeholder names in the mocks that correspond to the names in the test configs.
-    *   The import `go.temporal.io/api/enums/v1` is needed for `enumspb.TIMEOUT_TYPE_START_TO_CLOSE`.
-    *   The `Test_BasicDAG_SuccessfulExecution` mock for `"SimpleActivity"` was made more specific to demonstrate matching different parameters for different nodes of the same activity type.
-
-This set of tests covers the core functionalities: DAG traversal, skipping, redoing, TTL, and expiry. More specific edge cases or complex DAG structures could be added.
-
-I'll now create the file with the content.

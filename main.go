@@ -93,12 +93,16 @@ func startWorker(c client.Client, logger *zap.Logger) {
 }
 
 func startSampleWorkflow(c client.Client, logger *zap.Logger) {
-	logger.Info("Starting sample DAGWorkflow execution...")
+	logger.Info("Starting sample DAGWorkflow execution from config.yaml...")
 
-	sampleConfigJSON := workflow.GetSampleWorkflowConfigJSON()
-	cfg, err := workflow.LoadWorkflowConfigFromJSONString(sampleConfigJSON)
+	yamlFile, err := os.ReadFile("config.yaml")
 	if err != nil {
-		logger.Fatal("Failed to load sample workflow config", zap.Error(err))
+		logger.Fatal("Failed to read config.yaml", zap.Error(err))
+	}
+
+	cfg, err := workflow.LoadWorkflowConfigFromYAMLBytes(yamlFile)
+	if err != nil {
+		logger.Fatal("Failed to load workflow config from YAML", zap.Error(err))
 	}
 
 	workflowInput := workflow.DAGWorkflowInput{
