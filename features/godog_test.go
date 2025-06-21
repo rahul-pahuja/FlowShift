@@ -2,7 +2,6 @@ package features
 
 import (
 	"flag"
-	"fmt"
 	"os"
 	"testing"
 

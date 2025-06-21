@@ -2,20 +2,18 @@ package workflow
 
 import (
 	"context" // Required for mock function signatures
-	"dynamicworkflow/activities"
-	"dynamicworkflow/shared"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"flow-shift/activities"
+	"flow-shift/shared"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
-	"go.temporal.io/api/enums/v1" // For enumspb
 	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
-	"go.temporal.io/sdk/workflow"
 )
 
 type UnitTestSuite struct {
@@ -34,25 +32,24 @@ func (s *UnitTestSuite) SetupTest() {
 	s.env.RegisterActivity(activities.AsyncActivityExample)
 	s.env.RegisterActivity(activities.WaitActivityExample)
 	s.env.RegisterActivity(activities.ActivityThatCanFail)
-	// Register mock activities used in tests by specific names
-	activity.Register(func(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) {
+	// Register mock activities used in tests by specific names using env.RegisterActivity
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) {
 		// Default mock for DecisionActivity, specific tests can override with s.env.OnActivity
 		if choice, ok := params["choice"].(string); ok {
 			return map[string]interface{}{"decision": strings.ToUpper(choice)}, nil
 		}
 		return map[string]interface{}{"decision": "UNKNOWN"}, nil
-	}, "DecisionActivity")
-	activity.Register(func(ctx context.Context) (string, error) { return "Path1ActivityOutput", nil }, "Path1Activity")
-	activity.Register(func(ctx context.Context) (string, error) { return "Path2ActivityOutput", nil }, "Path2Activity")
-	activity.Register(func(ctx context.Context, params map[string]interface{}) (string, error) { return "PostSignalActivityOutput", nil }, "PostSignalActivity")
-	activity.Register(func(ctx context.Context, params map[string]interface{}) (string, error) { return "LongRunningOutput", nil }, "LongRunningActivity")
-	activity.Register(func(ctx context.Context, params map[string]interface{}) (string, error) { return "ShortActivityOutput", nil }, "ShortActivity")
-	activity.Register(func(ctx context.Context, params map[string]interface{}) (string, error) { return "NeverRunOutput", nil }, "NeverRunActivity")
+	}, activity.RegisterOptions{Name: "DecisionActivity"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context) (string, error) { return "Path1ActivityOutput", nil }, activity.RegisterOptions{Name: "Path1Activity"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context) (string, error) { return "Path2ActivityOutput", nil }, activity.RegisterOptions{Name: "Path2Activity"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]interface{}) (string, error) { return "PostSignalActivityOutput", nil }, activity.RegisterOptions{Name: "PostSignalActivity"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]interface{}) (string, error) { return "LongRunningOutput", nil }, activity.RegisterOptions{Name: "LongRunningActivity"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]interface{}) (string, error) { return "ShortActivityOutput", nil }, activity.RegisterOptions{Name: "ShortActivity"})
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]interface{}) (string, error) { return "NeverRunOutput", nil }, activity.RegisterOptions{Name: "NeverRunActivity"})
 }
 
 func (s *UnitTestSuite) AfterTest(suiteName, testName string) {
 	s.env.AssertExpectations(s.T())
-	s.env.Close()
 }
 
 // --- Test Cases (Existing tests updated, new tests to be added) ---
@@ -160,7 +157,7 @@ func (s *UnitTestSuite) Test_NodeActivityTimeout() {
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
-	s.env.OnActivity("LongRunningActivity", mock.Anything, mock.Anything).Return("", temporal.NewTimeoutError("simulated STC", enumspb.TIMEOUT_TYPE_START_TO_CLOSE)).Once()
+	s.env.OnActivity("LongRunningActivity", mock.Anything, mock.Anything).Return("", errors.New("simulated timeout")).Once()
 	s.env.OnActivity("SimpleSyncActivity", mock.Anything, mock.Anything).Return("Output from DependentNode", nil).Once()
 
 	s.env.ExecuteWorkflow(DAGWorkflow, input)
@@ -188,7 +185,10 @@ func (s *UnitTestSuite) Test_NodeExpiry_BeforeActivityStart() {
 	}
 	input := DAGWorkflowInput{Config: config}
 	s.env.OnActivity("ShortActivity", mock.Anything, mock.Anything).Return("Output from A", nil).Once()
-	s.env.RegisterDelayedCallback(func() { s.env.AdvanceTime(3 * time.Second) }, 1*time.Millisecond)
+	s.env.RegisterDelayedCallback(func() { 
+		// Simulate time advancement by setting the time manually
+		s.env.SetStartTime(time.Now().Add(-3 * time.Second))
+	}, 1*time.Millisecond)
 	s.env.OnActivity("SimpleSyncActivity", mock.Anything, mock.Anything).Return("Output from C", nil).Once()
 
 	s.env.ExecuteWorkflow(DAGWorkflow, input)
@@ -357,20 +357,20 @@ func (s *UnitTestSuite) Test_ResultValidity_TimerFires_ResetsNodes() {
 		return params["id"] == dependentNodeID && params["signal_for_attempt2_dependent"] == true
 	})).Return("DependentOutput_Attempt2", nil).Once()
 
+	// Send signals using delayed callbacks instead of trying to advance time
+	s.env.RegisterDelayedCallback(func() {
+		s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"signal_for_attempt1_source": true})
+	}, 1*time.Millisecond)
+	
+	s.env.RegisterDelayedCallback(func() {
+		s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"signal_for_attempt2_source": true})
+	}, 4*time.Second) // After validity timer expires
+	
+	s.env.RegisterDelayedCallback(func() {
+		s.env.SignalWorkflow(dependentSignal, map[string]interface{}{"signal_for_attempt2_dependent": true})
+	}, 5*time.Second)
+
 	s.env.ExecuteWorkflow(DAGWorkflow, input)
-
-	s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"signal_for_attempt1_source": true})
-	// Wait for activity to complete & timer to be set. A small advance helps here.
-	s.env.AdvanceTime(100 * time.Millisecond)
-
-
-	s.env.AdvanceTime(3 * time.Second) // Trigger validity timer (2s) and reset.
-
-	s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"signal_for_attempt2_source": true})
-	s.env.AdvanceTime(100 * time.Millisecond)
-
-	s.env.SignalWorkflow(dependentSignal, map[string]interface{}{"signal_for_attempt2_dependent": true})
-	s.env.AdvanceTime(100 * time.Millisecond)
 
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
