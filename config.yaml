@@ -1,0 +1,170 @@
+# Sample Workflow Configuration in YAML
+
+startNodeIDs:
+  - Initializer
+  - Parallel_Task_1
+  - UserInput_A_WithValidity
+  - Failing_Node_With_Redo
+  - Independent_Skipped_Node_Trigger
+
+nodes:
+  Initializer:
+    id: Initializer
+    type: sync
+    activityName: SimpleSyncActivity
+    params: { message: "Workflow Initialized", initial_branch_choice: 1 }
+    activityTimeoutSeconds: 60
+    nextNodeRules:
+      - { ruleId: IsResultCode1, targetNodeId: ApprovalGate_A }
+      - { ruleId: IsResultCode2, targetNodeId: ApprovalGate_B }
+      - { ruleId: CheckParamInitialChoice3, targetNodeId: Final_Step }
+      - { ruleId: AlwaysTrue, targetNodeId: Skipped_Node } # Default rule
+
+  ApprovalGate_A:
+    id: ApprovalGate_A
+    type: user_input
+    activityName: SimpleSyncActivity
+    params: { message: "Approval A path pending", approval_type: "TypeA" }
+    activityTimeoutSeconds: 300
+    signalName: "ApprovalSignal_A"
+    dependencies: [Initializer]
+    nextNodeRules:
+      - { ruleId: IsApproved, targetNodeId: Task_Branch_A1_Actual }
+      - { ruleId: IsRejected, targetNodeId: Escalation_Step }
+
+  ApprovalGate_B:
+    id: ApprovalGate_B
+    type: user_input
+    activityName: SimpleSyncActivity
+    params: { message: "Approval B path pending", approval_type: "TypeB" }
+    activityTimeoutSeconds: 300
+    signalName: "ApprovalSignal_B"
+    dependencies: [Initializer]
+    nextNodeRules:
+      - { ruleId: AlwaysTrue, targetNodeId: Task_Branch_B1 }
+
+  Task_Branch_A1_Actual:
+    id: Task_Branch_A1_Actual
+    type: async
+    activityName: AsyncActivityExample
+    params: { detail: "Executing task branch A1 after approval A" }
+    activityTimeoutSeconds: 600
+    dependencies: [ApprovalGate_A]
+    nextNodeRules:
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
+
+  Task_Branch_B1:
+    id: Task_Branch_B1
+    type: sync
+    activityName: SimpleSyncActivity
+    params: { detail: "Executing task branch B1 after approval B" }
+    dependencies: [ApprovalGate_B]
+    nextNodeRules:
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
+
+  Escalation_Step:
+    id: Escalation_Step
+    type: sync
+    activityName: SimpleSyncActivity
+    params: { message: "Handling escalation" }
+    activityTimeoutSeconds: 180
+    dependencies: [ApprovalGate_A]
+    nextNodeRules:
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
+
+  Parallel_Task_1:
+    id: Parallel_Task_1
+    type: wait
+    activityName: WaitActivityExample
+    params: { message: "Parallel Task 1 (Wait Activity)", durationSeconds: 5 }
+    activityTimeoutSeconds: 30
+    expirySeconds: 60
+    nextNodeRules:
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
+
+  UserInput_A_WithValidity:
+    id: UserInput_A_WithValidity
+    type: user_input
+    activityName: SimpleSyncActivity
+    params: { message: "UserInput A with validity" }
+    activityTimeoutSeconds: 120
+    resultValiditySeconds: 15
+    signalName: "Signal_A_Validity"
+    dependencies: []
+    nextNodeRules:
+      - { ruleId: AlwaysTrue, targetNodeId: UserInput_B_DependentOnAValidity }
+
+  UserInput_B_DependentOnAValidity:
+    id: UserInput_B_DependentOnAValidity
+    type: user_input
+    activityName: SimpleSyncActivity
+    params: { message: "UserInput B waiting for A's valid result" }
+    activityTimeoutSeconds: 120
+    signalName: "Signal_B_Validity"
+    dependencies: [UserInput_A_WithValidity]
+    nextNodeRules:
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step_From_Validity_Test }
+
+  Failing_Node_With_Redo:
+    id: Failing_Node_With_Redo
+    type: sync
+    activityName: ActivityThatCanFail
+    params: { message: "This node will fail a few times", forceFail: true }
+    activityTimeoutSeconds: 60
+    redoCondition: "on_failure"
+    dependencies: []
+    nextNodeRules:
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
+
+  Independent_Skipped_Node_Trigger:
+    id: Independent_Skipped_Node_Trigger
+    type: sync
+    activityName: SimpleSyncActivity
+    params: { message: "Trigger for actual skipped node" } # This node's output or params could be used by a rule if needed
+    activityTimeoutSeconds: 10
+    dependencies: []
+    nextNodeRules:
+      - { ruleId: AlwaysTrue, targetNodeId: Actual_Skipped_Node } # Example: could be a rule checking output of this node
+
+  Actual_Skipped_Node:
+    id: Actual_Skipped_Node
+    type: sync
+    activityName: SimpleSyncActivity
+    params: { message: "This node should be skipped by _skip param", _skip: true }
+    skipCondition: "params._skip == true"
+    dependencies: [Independent_Skipped_Node_Trigger]
+    nextNodeRules:
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
+
+  Skipped_Node:
+    id: Skipped_Node
+    type: sync
+    activityName: SimpleSyncActivity
+    params: { message: "This node (from Initializer default) should be skipped", _skip: true }
+    skipCondition: "params._skip == true"
+    dependencies: [Initializer]
+    nextNodeRules:
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
+
+  Final_Step:
+    id: Final_Step
+    type: sync
+    activityName: SimpleSyncActivity
+    params: { message: "Workflow Reached Final Step from main flow or redo/skip" }
+    activityTimeoutSeconds: 60
+    dependencies:
+      - Task_Branch_A1_Actual
+      - Task_Branch_B1
+      - Escalation_Step
+      - Parallel_Task_1
+      - Failing_Node_With_Redo
+      - Actual_Skipped_Node
+      - Skipped_Node
+
+  Final_Step_From_Validity_Test:
+    id: Final_Step_From_Validity_Test
+    type: sync
+    activityName: SimpleSyncActivity
+    params: { message: "Workflow Reached Final Step from Validity Test Path" }
+    activityTimeoutSeconds: 60
+    dependencies: [UserInput_B_DependentOnAValidity]
