@@ -81,7 +81,12 @@ func (e *DAGEngine) Execute() (map[string]interface{}, error) {
 
 	// Main execution loop
 	var errAggregator error
+	deadlockCounter := 0
+	const maxDeadlockChecks = 5
+	
 	for !e.isExecutionComplete() {
+		// Process ready nodes first
+		nodeProcessed := false
 		select {
 		case nodeID := <-e.readyQueue:
 			if err := e.processNode(nodeID); err != nil {
@@ -90,10 +95,20 @@ func (e *DAGEngine) Execute() (map[string]interface{}, error) {
 					errAggregator = err
 				}
 			}
+			nodeProcessed = true
+			deadlockCounter = 0 // Reset deadlock counter when we process nodes
 		default:
-			if e.canSelect() {
-				e.selector.Select(e.ctx)
-			} else if e.isDeadlocked() {
+			// No ready nodes to process
+		}
+
+		// If we have pending activities, wait for them to complete
+		if e.metrics.ProcessingNodes > 0 {
+			e.selector.Select(e.ctx)
+			deadlockCounter = 0 // Reset deadlock counter when activities complete
+		} else if !nodeProcessed {
+			// No ready nodes and no processing nodes - potential deadlock
+			deadlockCounter++
+			if deadlockCounter >= maxDeadlockChecks && e.isDeadlocked() {
 				e.logger.Error("DAG execution deadlocked", zap.Any("metrics", e.metrics))
 				if errAggregator == nil {
 					errAggregator = fmt.Errorf("DAG execution stalled with %d/%d nodes completed", 
@@ -101,6 +116,8 @@ func (e *DAGEngine) Execute() (map[string]interface{}, error) {
 				}
 				break
 			}
+			// Yield control to prevent tight loop
+			workflow.Sleep(e.ctx, time.Millisecond*10)
 		}
 	}
 
@@ -151,16 +168,6 @@ func (e *DAGEngine) scheduleNode(nodeID string) {
 
 // processNode handles the execution of a single node
 func (e *DAGEngine) processNode(nodeID string) error {
-	e.mu.Lock()
-	e.metrics.ProcessingNodes++
-	e.mu.Unlock()
-
-	defer func() {
-		e.mu.Lock()
-		e.metrics.ProcessingNodes--
-		e.mu.Unlock()
-	}()
-
 	node, exists := e.config.Nodes[nodeID]
 	if !exists {
 		return fmt.Errorf("node %s not found in configuration", nodeID)
@@ -278,6 +285,10 @@ func (e *DAGEngine) handleExpiredNode(nodeID string, status *shared.NodeStatus) 
 
 // executeNodeActivity executes the activity for a node
 func (e *DAGEngine) executeNodeActivity(nodeID string, node shared.Node, status *shared.NodeStatus) error {
+	e.mu.Lock()
+	e.metrics.ProcessingNodes++
+	e.mu.Unlock()
+
 	status.State = shared.NodeStateRunning
 	status.StartTime = workflow.Now(e.ctx).Unix()
 
@@ -293,11 +304,15 @@ func (e *DAGEngine) executeNodeActivity(nodeID string, node shared.Node, status 
 // handleActivityCompletion processes the result of an activity execution
 func (e *DAGEngine) handleActivityCompletion(nodeID string, node shared.Node, status *shared.NodeStatus, future workflow.Future) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.metrics.ProcessingNodes--
+	e.mu.Unlock()
 
 	var activityOutput interface{}
 	err := future.Get(e.ctx, &activityOutput)
+	
+	e.mu.Lock()
 	status.EndTime = workflow.Now(e.ctx).Unix()
+	e.mu.Unlock()
 
 	if err != nil {
 		e.handleActivityError(nodeID, node, status, err)
@@ -428,13 +443,6 @@ func (e *DAGEngine) isExecutionComplete() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.metrics.CompletedOrSkippedNodes >= e.metrics.TotalNodes
-}
-
-// canSelect checks if the selector can be used
-func (e *DAGEngine) canSelect() bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.metrics.ProcessingNodes > 0 || len(e.readyQueue) > 0
 }
 
 // isDeadlocked checks if the execution is deadlocked
