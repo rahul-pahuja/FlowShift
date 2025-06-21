@@ -100,9 +100,16 @@ func startSampleWorkflow(c client.Client, logger *zap.Logger) {
 		logger.Fatal("Failed to read config.yaml", zap.Error(err))
 	}
 
-	cfg, err := workflow.LoadWorkflowConfigFromYAMLBytes(yamlFile)
+	rulesFile, err := os.ReadFile("rules.yaml") // Load rules.yaml
 	if err != nil {
-		logger.Fatal("Failed to load workflow config from YAML", zap.Error(err))
+		// It's okay if rules.yaml doesn't exist, LoadFullWorkflowConfigFromYAMLs will handle empty rulesBytes
+		logger.Warn("Failed to read rules.yaml, proceeding without external rules unless embedded in config.yaml itself", zap.Error(err))
+		rulesFile = []byte{} // Empty bytes if file not found
+	}
+
+	cfg, err := workflow.LoadFullWorkflowConfigFromYAMLs(yamlFile, rulesFile)
+	if err != nil {
+		logger.Fatal("Failed to load workflow and rules config from YAML files", zap.Error(err))
 	}
 
 	workflowInput := workflow.DAGWorkflowInput{

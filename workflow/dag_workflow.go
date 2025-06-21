@@ -599,54 +599,24 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 					if nodeStatus.State == shared.NodeStateCompleted {
 						if len(node.NextNodeRules) > 0 {
 						logger.Info("Processing NextNodeRules for completed node", zap.String("NodeID", nodeID), zap.Int("numRules", len(node.NextNodeRules)))
-						for _, rule := range node.NextNodeRules {
-							if evaluateCondition(ctx, rule.Condition, node.Params, activityOutput) {
-								logger.Info("Condition met for rule, targeting next node",
-									zap.String("SourceNodeID", nodeID),
-									zap.String("TargetNodeID", rule.TargetNodeID),
-									zap.String("Condition", rule.Condition))
+						for _, ruleRef := range node.NextNodeRules { // ruleRef is of type shared.NextNodeRule
+							actualRule, ruleExists := config.Rules[ruleRef.RuleID]
+							if !ruleExists {
+								logger.Error("RuleID from NextNodeRule not found in WorkflowConfig.Rules, skipping rule.",
+									zap.String("NodeID", nodeID),
+									zap.String("MissingRuleID", ruleRef.RuleID),
+									zap.String("TargetNodeID", ruleRef.TargetNodeID))
+								continue // Skip this rule definition
+							}
 
-								// This target node still needs its explicit dependencies met.
-								// The rule evaluation acts as an additional gate *from the source node*.
-								// We decrement its dependency count as this path from source node is now "active".
-								// This assumes TargetNodeID is listed in this node's dependentsMap or similar.
-								// This part of the logic might need refinement based on how static vs dynamic deps are fully structured.
-								// For now, let's assume TargetNodeID would have had SourceNodeID as one of its dependencies.
+							if evaluateCondition(ctx, actualRule.Expression, node.Params, activityOutput) {
+								logger.Info("Condition met for rule, targeting next node.",
+									zap.String("SourceNodeID", nodeID),
+									zap.String("TargetNodeID", ruleRef.TargetNodeID),
+									zap.String("RuleID", ruleRef.RuleID),
+									zap.String("Expression", actualRule.Expression))
 
 								if _, ok := dependencyCount[rule.TargetNodeID]; ok {
-									// This check is important: only decrement if the target is a known node in the plan
-									// and part of the dependency tracking.
-									// Original logic: dependencyCount[rule.TargetNodeID]--
-									// New consideration: Is this dependency already accounted for in the initial count?
-									// If NextNodeRules *replace* the old way of finding dependents, then the initial
-									// dependencyCount for rule.TargetNodeID should have included nodeID.
-									// If NextNodeRules are *additive* to static dependencies, this is more complex.
-
-									// Let's assume for now that rule.TargetNodeID *had* nodeID as a dependency.
-									// So, decrementing here is correct.
-									// The key is that a node only becomes ready if ALL its dependencies are met.
-									// A conditional rule being true is like one of possibly many incoming edges becoming active.
-
-									logger.Info("Decrementing dependency for target of conditional rule",
-										zap.String("TargetNodeID", rule.TargetNodeID),
-										zap.Int("OldDepCount", dependencyCount[rule.TargetNodeID]))
-
-									// This part needs to be careful to avoid double-counting or incorrect readiness.
-									// A simpler model: if a rule targets Y, Y is made ready if its *other* dependencies are met.
-									// The rule itself is the "trigger" from X.
-
-									// Let's stick to: the rule being true fulfills the dependency from *this* node (nodeID) to rule.TargetNodeID.
-									// The target node still needs its other dependencies to be met.
-
-									// The primary function of this block is to identify WHICH of the potential next nodes
-									// should have their dependency from *this current node* marked as satisfied.
-
-									// Consider a targetNode. Its dependencyCount was set based on its Node.Dependencies list.
-									// If the current node (nodeID) is in targetNode.Dependencies, then this rule activating
-									// means that specific dependency is met.
-
-									// Check if the target node has the current node as a declared dependency.
-									// This ensures we only decrement if it was an expected prerequisite.
 									isDeclaredDependency := false
 									if targetNodeConfig, okConfig := config.Nodes[rule.TargetNodeID]; okConfig {
 										for _, dep := range targetNodeConfig.Dependencies {

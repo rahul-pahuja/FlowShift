@@ -170,19 +170,27 @@ func (wtc *WorkflowTestContext) theWorkflowConfigurationIsLoadedFrom(configFile 
 			return fmt.Errorf("failed to read config file %s: %w", configFile, err)
 		}
 	}
-	wtc.workflowConfig, err = workflow.LoadWorkflowConfigFromYAMLBytes(yamlFile)
-	if err != nil {
-		return fmt.Errorf("failed to load workflow config from %s: %w", configFile, err)
+	// Also attempt to load rules.yaml
+	rulesFile, errRules := os.ReadFile("../rules.yaml") // Assuming rules.yaml is at project root, steps are in features/steps
+	if errRules != nil {
+		wtc.logger.Warn("rules.yaml not found or could not be read, proceeding without external rules.", zap.Error(errRules))
+		rulesFile = []byte{} // Empty bytes, LoadFullWorkflowConfigFromYAMLs will handle it
 	}
-	wtc.logger.Info("Workflow config loaded", zap.String("file", configFile))
+
+	wtc.workflowConfig, err = workflow.LoadFullWorkflowConfigFromYAMLs(yamlFile, rulesFile)
+	if err != nil {
+		return fmt.Errorf("failed to load full workflow config (dag+rules) from %s: %w", configFile, err)
+	}
+	wtc.logger.Info("Workflow config and rules loaded", zap.String("dagFile", configFile))
 	return nil
 }
 
 func (wtc *WorkflowTestContext) theWorkflowConfigurationIsLoadedFromSpecificallyForStartNodes(configFile, startNodesStr string) error {
-    if err := wtc.theWorkflowConfigurationIsLoadedFrom(configFile); err != nil {
-        return err
-    }
-    startNodes := strings.Split(startNodesStr, ",")
+	// This step will now also load rules associated with the configFile
+	if err := wtc.theWorkflowConfigurationIsLoadedFrom(configFile); err != nil {
+		return err
+	}
+	startNodes := strings.Split(startNodesStr, ",")
     trimmedStartNodes := make([]string, len(startNodes))
     for i, sn := range startNodes {
         trimmedStartNodes[i] = strings.TrimSpace(sn)

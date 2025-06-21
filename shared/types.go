@@ -11,10 +11,17 @@ const (
 	// Add other node types as needed
 )
 
-// NextNodeRule defines a condition and a target node for conditional pathing
+// Rule defines a reusable condition expression
+type Rule struct {
+	ID          string `json:"id" yaml:"id"`
+	Expression  string `json:"expression" yaml:"expression"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+}
+
+// NextNodeRule defines a rule (by ID) and a target node for conditional pathing
 type NextNodeRule struct {
-	Condition    string `json:"condition"`    // e.g., "output.status == 'success'" or "params.branch == 'A'"
-	TargetNodeID string `json:"targetNodeId"` // The ID of the next node to execute if condition is met
+	RuleID       string `json:"ruleId" yaml:"ruleId"`             // ID of a rule defined in WorkflowConfig.Rules
+	TargetNodeID string `json:"targetNodeId" yaml:"targetNodeId"` // The ID of the next node to execute if condition is met
 }
 
 // NodeState defines the current state of a node in the workflow
@@ -48,8 +55,9 @@ type Node struct {
 
 // WorkflowConfig defines the structure of the workflow to be executed
 type WorkflowConfig struct {
-	Nodes        map[string]Node `json:"nodes"` // Using a map for easy lookup by ID
-	StartNodeIDs []string        `json:"startNodeIDs"`
+	Nodes        map[string]Node `json:"nodes" yaml:"nodes"` // Using a map for easy lookup by ID
+	StartNodeIDs []string        `json:"startNodeIDs" yaml:"startNodeIDs"`
+	Rules        map[string]Rule `json:"rules,omitempty" yaml:"rules,omitempty"` // Map of RuleID to Rule definition
 }
 
 // NodeStatus holds the runtime status of a node

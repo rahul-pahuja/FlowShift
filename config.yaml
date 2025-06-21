@@ -1,236 +1,24 @@
 # Sample Workflow Configuration in YAML
 
-# StartNodeIDs defines the initial set of nodes to begin execution.
-# These nodes should not have any unmet dependencies.
 startNodeIDs:
   - Initializer
   - Parallel_Task_1
-
-# Nodes is a map where each key is a unique node ID and the value contains the node's configuration.
-nodes:
-  Initializer:
-    id: Initializer
-    type: sync # NodeType: sync, async, wait, user_input
-    activityName: SimpleSyncActivity
-    params:
-      message: "Workflow Initialized"
-      next_step: "ApprovalGate" # Parameter to be used in a condition
-    activityTimeoutSeconds: 60
-    # This node will use conditional pathing
-    nextNodeRules:
-      - condition: "output.result_code == 1" # Assuming SimpleSyncActivity can return a map like {"result_code": 1}
-        targetNodeId: ApprovalGate_A
-      - condition: "output.result_code == 2"
-        targetNodeId: ApprovalGate_B
-      - condition: "params.next_step == 'DirectToEnd'" # Fallback or alternative condition based on input param
-        targetNodeId: Final_Step
-    # If no rule matches, and no static dependents, this path might end here.
-    # Or, ensure a default rule like "condition: true" to a fallback targetNodeId.
-
-  ApprovalGate_A:
-    id: ApprovalGate_A
-    type: user_input
-    activityName: SimpleSyncActivity # Activity to run after signal
-    params:
-      message: "Approval A path pending"
-      approval_type: "TypeA"
-    activityTimeoutSeconds: 300 # Timeout for the activity part, after signal
-    resultValiditySeconds: 3600 # Result valid for 1 hour
-    signalName: "ApprovalSignal_A"
-    dependencies: # This node depends on Initializer implicitly due to NextNodeRule targeting it.
-                  # Explicit dependencies can also be listed if needed for other triggers.
-      - Initializer # This dependency is met when Initializer completes AND its rule targets ApprovalGate_A
-    nextNodeRules:
-      - condition: "output.approved == true"
-        targetNodeId: Task_Branch_A1
-      - condition: "output.approved == false"
-        targetNodeId: Escalation_Step
-
-  ApprovalGate_B:
-    id: ApprovalGate_B
-    type: user_input
-    activityName: SimpleSyncActivity
-    params:
-      message: "Approval B path pending"
-      approval_type: "TypeB"
-    activityTimeoutSeconds: 300
-    signalName: "ApprovalSignal_B"
-    dependencies:
-      - Initializer # Dependency met when Initializer completes AND its rule targets ApprovalGate_B
-    nextNodeRules:
-      - condition: "true" # Always go to Task_Branch_B1 after approval B
-        targetNodeId: Task_Branch_B1
-
-  Task_Branch_A1:
-    id: Task_Branch_A1
-    type: async
-    activityName: AsyncActivityExample
-    params:
-      detail: "Executing task branch A1 after approval A"
-    activityTimeoutSeconds: 600
-    dependencies:
-      - ApprovalGate_A # Depends on ApprovalGate_A completing AND its rule targeting here.
-    # This node will be the critical dependent for ApprovalGate_A's resultValiditySeconds
-    # (Implicitly, because it's a UserInput type. Our findCriticalDependent logic might need adjustment or explicit config)
-    # For the ResultValiditySeconds A->B (user_input) example, let's make this a user_input node
-    # to fit the specific scenario discussed for ResultValiditySeconds.
-    # Let's rename and repurpose for clarity for ResultValiditySeconds:
-
-  UserInput_A_WithValidity: # Was ApprovalGate_A
-    id: UserInput_A_WithValidity
-    type: user_input
-    activityName: SimpleSyncActivity
-    params:
-      message: "UserInput A with validity"
-    activityTimeoutSeconds: 120
-    resultValiditySeconds: 30 # Short validity for testing
-    signalName: "Signal_A_Validity"
-    dependencies: [] # Assume this can be a start node for this specific test flow
-    nextNodeRules:
-      - condition: "true"
-        targetNodeId: UserInput_B_DependentOnAValidity
-
-  UserInput_B_DependentOnAValidity:
-    id: UserInput_B_DependentOnAValidity
-    type: user_input
-    activityName: SimpleSyncActivity
-    params:
-      message: "UserInput B waiting for A's valid result"
-    activityTimeoutSeconds: 120
-    signalName: "Signal_B_Validity"
-    dependencies:
-      - UserInput_A_WithValidity # This dependency is key for validity tracking
-
-  # --- Original example nodes modified or kept for other features ---
-  Task_Branch_B1:
-    id: Task_Branch_B1
-    type: sync
-    activityName: SimpleSyncActivity
-    params:
-      detail: "Executing task branch B1 after approval B"
-    dependencies:
-      - ApprovalGate_B
-    nextNodeRules:
-      - condition: "true"
-        targetNodeId: Final_Step
-
-  Escalation_Step:
-    id: Escalation_Step
-    type: sync
-    activityName: SimpleSyncActivity
-    params:
-      message: "Handling escalation"
-    activityTimeoutSeconds: 180
-    dependencies:
-      - ApprovalGate_A # Assumes this path is taken if ApprovalGate_A output.approved == false
-    nextNodeRules:
-      - condition: "true"
-        targetNodeId: Final_Step
-
-  Parallel_Task_1:
-    id: Parallel_Task_1
-    type: wait # Example of a wait node
-    activityName: WaitActivityExample
-    params:
-      message: "Parallel Task 1 (Wait Activity)"
-      durationSeconds: 10 # Custom param for WaitActivityExample
-    activityTimeoutSeconds: 30 # Must be > durationSeconds + heartbeat overheads
-    expirySeconds: 60 # This node itself can expire if not started
-    nextNodeRules:
-      - condition: "true"
-        targetNodeId: Final_Step
-
-  Failing_Node_With_Redo:
-    id: Failing_Node_With_Redo
-    type: sync
-    activityName: ActivityThatCanFail
-    params:
-      message: "This node will fail a few times"
-      forceFail: true # Custom param for ActivityThatCanFail
-    activityTimeoutSeconds: 60
-    redoCondition: "on_failure" # Built-in redo
-    # No explicit startNodeID, so it needs to be a target of a rule or a dependency.
-    # Let's make it a start node for simplicity in this example.
-    # startNodeIDs: [..., Failing_Node_With_Redo]
-    # dependencies: [] # If it's a start node
-    # For now, let's assume it's triggered by something if not a start node.
-    # To make it runnable in this sample, let's add it to startNodeIDs or make it dependent on Initializer.
-    # Let's make it dependent on Initializer without a rule, so it runs if Initializer completes.
-    dependencies:
-       - Initializer # This will run if Initializer completes, regardless of rules, if no rules are specified for Initializer that exclusively define all paths.
-                     # Current rule logic will prioritize NextNodeRules. If Initializer has rules, this won't be auto-triggered.
-                     # To ensure it runs, Initializer would need a rule targeting it, or it's a startNode.
-                     # For this sample, let's assume Initializer has a fallback rule or it's a start node.
-                     # For a cleaner example, let's make it a startNodeID
-                     # startNodeIDs: [..., Failing_Node_With_Redo]
-                     # We'll adjust startNodeIDs at the top.
-
-  Skipped_Node:
-    id: Skipped_Node
-    type: sync
-    activityName: SimpleSyncActivity
-    params:
-      message: "This node should be skipped"
-      _skip: true # Built-in skip
-    skipCondition: "params._skip == true" # Informational, current evaluator uses the _skip param directly
-    dependencies:
-      - Initializer # Example dependency
-
-  Final_Step:
-    id: Final_Step
-    type: sync
-    activityName: SimpleSyncActivity
-    params:
-      message: "Workflow Reached Final Step"
-    activityTimeoutSeconds: 60
-    # This node is a sink, depends on one of:
-    # Task_Branch_A1 (via UserInput_B_DependentOnAValidity if that's the path)
-    # Task_Branch_B1
-    # Escalation_Step
-    # Parallel_Task_1
-    # It needs to list all potential direct parents as dependencies.
-    # The DAG logic ensures it only runs when one of these paths completes AND all its listed dependencies are met.
-    # This means if multiple paths can lead to Final_Step, they must all complete if listed as hard dependencies.
-    # This is where "join" patterns become important.
-    # For this example, let's simplify: assume only one of these paths will realistically lead to Final_Step at a time,
-    # or that the NextNodeRules handle the fan-in correctly.
-    # A common pattern for joins is a "barrier" node or ensuring dependencies are correctly listed.
-    # For now, we'll assume that if any node targets Final_Step via a rule, and Final_Step
-    # lists that node as a dependency, it works.
-    # To make it robust, Final_Step would list all nodes that *could* precede it.
-    dependencies:
-      - Task_Branch_B1 # Example: if B path is taken
-      - Escalation_Step # Example: if A escalates
-      - Parallel_Task_1 # Example: from parallel path
-      # - UserInput_B_DependentOnAValidity # If A1 path is taken (via UserInput_B)
-      # For a true join, ALL listed dependencies must be met.
-      # If it's an OR join (any path can lead to it), the dependency logic or rules need to reflect that.
-      # Let's assume for this sample, one of these will trigger it.
-      # A more complex join might need a dedicated join node or more sophisticated rule evaluation.
-
-# Adjusting startNodeIDs to include the specific test cases clearly
-startNodeIDs:
-  - Initializer # For main conditional flow
-  - Parallel_Task_1 # For parallel execution example
-  - UserInput_A_WithValidity # For ResultValiditySeconds test case
-  - Failing_Node_With_Redo # For redo test case, making it a start node
-  - Skipped_Node # For skip test case, assuming Initializer is its dependency as configured above, so this might be redundant as a startNode if Initializer already runs. Let's make it depend on something else or also a start node.
-                # To test skip independently:
+  - UserInput_A_WithValidity
+  - Failing_Node_With_Redo
   - Independent_Skipped_Node_Trigger
 
 nodes:
-  # ... (Initializer, ApprovalGate_A, ApprovalGate_B as above) ...
   Initializer:
     id: Initializer
     type: sync
     activityName: SimpleSyncActivity
-    params: { message: "Workflow Initialized", next_step: "ApprovalGate" }
+    params: { message: "Workflow Initialized", initial_branch_choice: 1 }
     activityTimeoutSeconds: 60
     nextNodeRules:
-      - { condition: "output.result_code == 1", targetNodeId: ApprovalGate_A } # SimpleSyncActivity needs to return map[string]interface{}{"result_code": 1}
-      - { condition: "output.result_code == 2", targetNodeId: ApprovalGate_B }
-      - { condition: "params.next_step == 'DirectToEnd'", targetNodeId: Final_Step }
-      - { condition: "true", targetNodeId: Skipped_Node } # Default rule to trigger Skipped_Node if others don't match
+      - { ruleId: IsResultCode1, targetNodeId: ApprovalGate_A }
+      - { ruleId: IsResultCode2, targetNodeId: ApprovalGate_B }
+      - { ruleId: CheckParamInitialChoice3, targetNodeId: Final_Step }
+      - { ruleId: AlwaysTrue, targetNodeId: Skipped_Node } # Default rule
 
   ApprovalGate_A:
     id: ApprovalGate_A
@@ -241,8 +29,8 @@ nodes:
     signalName: "ApprovalSignal_A"
     dependencies: [Initializer]
     nextNodeRules:
-      - { condition: "output.approved == true", targetNodeId: Task_Branch_A1_Actual } # Renamed for clarity
-      - { condition: "output.approved == false", targetNodeId: Escalation_Step }
+      - { ruleId: IsApproved, targetNodeId: Task_Branch_A1_Actual }
+      - { ruleId: IsRejected, targetNodeId: Escalation_Step }
 
   ApprovalGate_B:
     id: ApprovalGate_B
@@ -253,9 +41,9 @@ nodes:
     signalName: "ApprovalSignal_B"
     dependencies: [Initializer]
     nextNodeRules:
-      - { condition: "true", targetNodeId: Task_Branch_B1 }
+      - { ruleId: AlwaysTrue, targetNodeId: Task_Branch_B1 }
 
-  Task_Branch_A1_Actual: # Renamed from Task_Branch_A1
+  Task_Branch_A1_Actual:
     id: Task_Branch_A1_Actual
     type: async
     activityName: AsyncActivityExample
@@ -263,7 +51,7 @@ nodes:
     activityTimeoutSeconds: 600
     dependencies: [ApprovalGate_A]
     nextNodeRules:
-      - { condition: "true", targetNodeId: Final_Step }
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
 
   Task_Branch_B1:
     id: Task_Branch_B1
@@ -272,7 +60,7 @@ nodes:
     params: { detail: "Executing task branch B1 after approval B" }
     dependencies: [ApprovalGate_B]
     nextNodeRules:
-      - { condition: "true", targetNodeId: Final_Step }
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
 
   Escalation_Step:
     id: Escalation_Step
@@ -282,43 +70,40 @@ nodes:
     activityTimeoutSeconds: 180
     dependencies: [ApprovalGate_A]
     nextNodeRules:
-      - { condition: "true", targetNodeId: Final_Step }
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
 
   Parallel_Task_1:
     id: Parallel_Task_1
     type: wait
     activityName: WaitActivityExample
-    params: { message: "Parallel Task 1 (Wait Activity)", durationSeconds: 5 } # Reduced duration
+    params: { message: "Parallel Task 1 (Wait Activity)", durationSeconds: 5 }
     activityTimeoutSeconds: 30
     expirySeconds: 60
     nextNodeRules:
-      - { condition: "true", targetNodeId: Final_Step }
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
 
-  # --- Nodes for specific feature tests ---
   UserInput_A_WithValidity:
     id: UserInput_A_WithValidity
     type: user_input
     activityName: SimpleSyncActivity
-    params: { message: "UserInput A with validity - expecting output like {\"data_for_b\": \"some_value\"}" }
+    params: { message: "UserInput A with validity" }
     activityTimeoutSeconds: 120
-    resultValiditySeconds: 15 # Short validity for testing
+    resultValiditySeconds: 15
     signalName: "Signal_A_Validity"
     dependencies: []
     nextNodeRules:
-      - { condition: "true", targetNodeId: UserInput_B_DependentOnAValidity }
+      - { ruleId: AlwaysTrue, targetNodeId: UserInput_B_DependentOnAValidity }
 
   UserInput_B_DependentOnAValidity:
     id: UserInput_B_DependentOnAValidity
     type: user_input
-    activityName: SimpleSyncActivity  # This activity will use data from UserInput_A_WithValidity
+    activityName: SimpleSyncActivity
     params: { message: "UserInput B waiting for A's valid result" }
     activityTimeoutSeconds: 120
-    signalName: "Signal_B_Validity" # B gets its own signal to proceed
+    signalName: "Signal_B_Validity"
     dependencies: [UserInput_A_WithValidity]
-    # No NextNodeRules, this path ends or joins Final_Step via UserInput_A_WithValidity's other potential rules.
-    # For this specific test, let's have it target Final_Step too.
     nextNodeRules:
-      - { condition: "true", targetNodeId: Final_Step_From_Validity_Test }
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step_From_Validity_Test }
 
   Failing_Node_With_Redo:
     id: Failing_Node_With_Redo
@@ -329,29 +114,29 @@ nodes:
     redoCondition: "on_failure"
     dependencies: []
     nextNodeRules:
-      - { condition: "true", targetNodeId: Final_Step } # Or some other step
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
 
-  Independent_Skipped_Node_Trigger: # A dummy node to trigger the actual skipped node via rules
+  Independent_Skipped_Node_Trigger:
     id: Independent_Skipped_Node_Trigger
     type: sync
     activityName: SimpleSyncActivity
-    params: { trigger_skip_param: true } # Parameter to control skipping of next node
+    params: { message: "Trigger for actual skipped node" } # This node's output or params could be used by a rule if needed
     activityTimeoutSeconds: 10
     dependencies: []
     nextNodeRules:
-      - { condition: "params.trigger_skip_param == true", targetNodeId: Actual_Skipped_Node }
+      - { ruleId: AlwaysTrue, targetNodeId: Actual_Skipped_Node } # Example: could be a rule checking output of this node
 
-  Actual_Skipped_Node: # The node that will actually be skipped
+  Actual_Skipped_Node:
     id: Actual_Skipped_Node
     type: sync
-    activityName: SimpleSyncActivity # This activity won't run
-    params: { message: "This node should be skipped", _skip: true }
+    activityName: SimpleSyncActivity
+    params: { message: "This node should be skipped by _skip param", _skip: true }
     skipCondition: "params._skip == true"
     dependencies: [Independent_Skipped_Node_Trigger]
     nextNodeRules:
-      - { condition: "true", targetNodeId: Final_Step } # Path after skip
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
 
-  Skipped_Node: # Original skipped node, triggered by Initializer's default rule
+  Skipped_Node:
     id: Skipped_Node
     type: sync
     activityName: SimpleSyncActivity
@@ -359,7 +144,7 @@ nodes:
     skipCondition: "params._skip == true"
     dependencies: [Initializer]
     nextNodeRules:
-      - { condition: "true", targetNodeId: Final_Step }
+      - { ruleId: AlwaysTrue, targetNodeId: Final_Step }
 
   Final_Step:
     id: Final_Step
@@ -368,20 +153,13 @@ nodes:
     params: { message: "Workflow Reached Final Step from main flow or redo/skip" }
     activityTimeoutSeconds: 60
     dependencies:
-      - Task_Branch_A1_Actual # Could come from here
+      - Task_Branch_A1_Actual
       - Task_Branch_B1
       - Escalation_Step
       - Parallel_Task_1
-      - Failing_Node_With_Redo # If it succeeds
-      - Actual_Skipped_Node # If Independent_Skipped_Node_Trigger path is taken
-      - Skipped_Node # If Initializer default path is taken
-      # This node acts as a common sink. It will only run when ALL its listed dependencies that are
-      # part of an *active path* are completed. The current DAG logic might need refinement for complex joins.
-      # For now, if multiple startNodeIDs lead to separate branches that all target Final_Step,
-      # Final_Step would need all those branches to complete if they are all listed as dependencies.
-      # A simpler model for multiple independent flows ending here is to have separate final steps
-      # or ensure only relevant dependencies are listed based on which flow is active.
-      # For this sample, we assume the rules and dependencies are set up such that valid paths converge.
+      - Failing_Node_With_Redo
+      - Actual_Skipped_Node
+      - Skipped_Node
 
   Final_Step_From_Validity_Test:
     id: Final_Step_From_Validity_Test
@@ -390,33 +168,3 @@ nodes:
     params: { message: "Workflow Reached Final Step from Validity Test Path" }
     activityTimeoutSeconds: 60
     dependencies: [UserInput_B_DependentOnAValidity]
-
-# Final check on startNodeIDs based on the detailed node definitions above
-# startNodeIDs:
-#  - Initializer  -> Triggers conditional flow, and Skipped_Node by default rule
-#  - Parallel_Task_1 -> Runs in parallel, targets Final_Step
-#  - UserInput_A_WithValidity -> Starts the ResultValiditySeconds test flow
-#  - Failing_Node_With_Redo -> Starts the redo test flow
-#  - Independent_Skipped_Node_Trigger -> Starts the independent skip test flow
-# This looks like a good set to test various aspects.Okay, I've created the `config.yaml` with a more elaborate set of nodes to demonstrate the new features. It includes:
-
-*   **`startNodeIDs`**: Defined to kick off different branches of the workflow for testing various features.
-*   **`nodes`**:
-    *   **`Initializer`**: Demonstrates `nextNodeRules` for conditional pathing based on its `activityOutput` (e.g., `output.result_code == 1`) or its initial `params`. It also has a default "true" condition to show a fallback path.
-    *   **`ApprovalGate_A` / `ApprovalGate_B`**: These are `user_input` nodes with `signalName` and their own `nextNodeRules` based on their activity's output (e.g., `output.approved == true`). They depend on `Initializer` via the rules.
-    *   **`Task_Branch_A1_Actual`**, **`Task_Branch_B1`**, **`Escalation_Step`**: Regular nodes that are targets of conditional paths.
-    *   **`Parallel_Task_1`**: A `wait` type node running independently, demonstrating `activityTimeoutSeconds` and `expirySeconds`.
-    *   **`UserInput_A_WithValidity`** and **`UserInput_B_DependentOnAValidity`**: Specifically set up to test the `resultValiditySeconds` feature. Node A has a short validity, and Node B depends on it. Both are `user_input` type.
-    *   **`Failing_Node_With_Redo`**: A simple node that uses `ActivityThatCanFail` and `redoCondition: "on_failure"`.
-    *   **`Independent_Skipped_Node_Trigger`** and **`Actual_Skipped_Node`**: Demonstrate the skip logic where one node's parameters (conditionally set by `Independent_Skipped_Node_Trigger`'s rule) cause `Actual_Skipped_Node` to be skipped (via `_skip: true` in its params).
-    *   **`Skipped_Node`**: Another skip example, triggered by a default rule from `Initializer`.
-    *   **`Final_Step`** and **`Final_Step_From_Validity_Test`**: Act as sink nodes for different paths. The main `Final_Step` lists multiple potential parents in its `dependencies` to illustrate how joins would need to be handled (though true complex join logic isn't fully implemented in the current DAG traversal, it relies on all listed dependencies being met if a path activates them).
-
-**Sample Rules Used:**
-*   `output.result_code == 1` (expects activity to return a map with `result_code`)
-*   `output.approved == true` (expects activity to return a map with `approved`)
-*   `params.next_step == 'DirectToEnd'` (checks initial parameters of the node)
-*   `params.trigger_skip_param == true`
-*   `true` (as a default or unconditional rule)
-
-This YAML is quite comprehensive. The next step is to implement the YAML loading mechanism.

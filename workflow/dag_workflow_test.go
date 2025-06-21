@@ -30,15 +30,24 @@ func TestUnitTestSuite(t *testing.T) {
 
 func (s *UnitTestSuite) SetupTest() {
 	s.env = s.NewTestWorkflowEnvironment()
-	// Register real activities; mocks in tests will override behavior for specific calls.
 	s.env.RegisterActivity(activities.SimpleSyncActivity)
 	s.env.RegisterActivity(activities.AsyncActivityExample)
 	s.env.RegisterActivity(activities.WaitActivityExample)
 	s.env.RegisterActivity(activities.ActivityThatCanFail)
-	// Register any placeholder activities used in tests if not actual ones
-	s.env.RegisterActivity(func(ctx context.Context, params map[string]interface{}) (string, error) { return "LongRunningOutput", nil }) // LongRunningActivity
-	s.env.RegisterActivity(func(ctx context.Context, params map[string]interface{}) (string, error) { return "ShortActivityOutput", nil }) // ShortActivity
-	s.env.RegisterActivity(func(ctx context.Context, params map[string]interface{}) (string, error) { return "NeverRunOutput", nil })    // NeverRunActivity
+	// Register mock activities used in tests by specific names
+	activity.Register(func(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) {
+		// Default mock for DecisionActivity, specific tests can override with s.env.OnActivity
+		if choice, ok := params["choice"].(string); ok {
+			return map[string]interface{}{"decision": strings.ToUpper(choice)}, nil
+		}
+		return map[string]interface{}{"decision": "UNKNOWN"}, nil
+	}, "DecisionActivity")
+	activity.Register(func(ctx context.Context) (string, error) { return "Path1ActivityOutput", nil }, "Path1Activity")
+	activity.Register(func(ctx context.Context) (string, error) { return "Path2ActivityOutput", nil }, "Path2Activity")
+	activity.Register(func(ctx context.Context, params map[string]interface{}) (string, error) { return "PostSignalActivityOutput", nil }, "PostSignalActivity")
+	activity.Register(func(ctx context.Context, params map[string]interface{}) (string, error) { return "LongRunningOutput", nil }, "LongRunningActivity")
+	activity.Register(func(ctx context.Context, params map[string]interface{}) (string, error) { return "ShortActivityOutput", nil }, "ShortActivity")
+	activity.Register(func(ctx context.Context, params map[string]interface{}) (string, error) { return "NeverRunOutput", nil }, "NeverRunActivity")
 }
 
 func (s *UnitTestSuite) AfterTest(suiteName, testName string) {
@@ -49,6 +58,8 @@ func (s *UnitTestSuite) AfterTest(suiteName, testName string) {
 // --- Test Cases (Existing tests updated, new tests to be added) ---
 
 func (s *UnitTestSuite) Test_BasicDAG_SuccessfulExecution_WithNextNodeRules() {
+	ruleStatusDoneID := "StatusIsDone"
+	ruleTrueID := "AlwaysTrue"
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{"A"},
 		Nodes: map[string]shared.Node{
@@ -57,13 +68,17 @@ func (s *UnitTestSuite) Test_BasicDAG_SuccessfulExecution_WithNextNodeRules() {
 				ActivityName: "SimpleSyncActivity",
 				Params:       map[string]interface{}{"data": "A_data"},
 				NextNodeRules: []shared.NextNodeRule{
-					{Condition: "output.status == 'done'", TargetNodeID: "B"},
-					{Condition: "output.status == 'done'", TargetNodeID: "C"},
+					{RuleID: ruleStatusDoneID, TargetNodeID: "B"},
+					{RuleID: ruleStatusDoneID, TargetNodeID: "C"},
 				},
 			},
-			"B": {ID: "B", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "B_data"}, Dependencies: []string{"A"}, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: "D"}}},
-			"C": {ID: "C", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "C_data"}, Dependencies: []string{"A"}, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: "D"}}},
+			"B": {ID: "B", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "B_data"}, Dependencies: []string{"A"}, NextNodeRules: []shared.NextNodeRule{{RuleID: ruleTrueID, TargetNodeID: "D"}}},
+			"C": {ID: "C", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "C_data"}, Dependencies: []string{"A"}, NextNodeRules: []shared.NextNodeRule{{RuleID: ruleTrueID, TargetNodeID: "D"}}},
 			"D": {ID: "D", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "D_data"}, Dependencies: []string{"B", "C"}},
+		},
+		Rules: map[string]shared.Rule{
+			ruleStatusDoneID: {ID: ruleStatusDoneID, Expression: "output.status == 'done'"},
+			ruleTrueID:       {ID: ruleTrueID, Expression: "true"},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
@@ -85,12 +100,16 @@ func (s *UnitTestSuite) Test_BasicDAG_SuccessfulExecution_WithNextNodeRules() {
 }
 
 func (s *UnitTestSuite) Test_NodeSkipped_WithNextNodeRules() {
+	ruleTrueID := "AlwaysTrue"
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{"A"},
 		Nodes: map[string]shared.Node{
-			"A":      {ID: "A", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "A_data"}, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: "B_skip"}}},
-			"B_skip": {ID: "B_skip", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"_skip": true}, Dependencies: []string{"A"}, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: "C"}}},
+			"A":      {ID: "A", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "A_data"}, NextNodeRules: []shared.NextNodeRule{{RuleID: ruleTrueID, TargetNodeID: "B_skip"}}},
+			"B_skip": {ID: "B_skip", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"_skip": true}, Dependencies: []string{"A"}, NextNodeRules: []shared.NextNodeRule{{RuleID: ruleTrueID, TargetNodeID: "C"}}},
 			"C":      {ID: "C", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"data": "C_data"}, Dependencies: []string{"B_skip"}},
+		},
+		Rules: map[string]shared.Rule{
+			ruleTrueID: {ID: ruleTrueID, Expression: "true"},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
@@ -107,11 +126,15 @@ func (s *UnitTestSuite) Test_NodeSkipped_WithNextNodeRules() {
 }
 
 func (s *UnitTestSuite) Test_NodeFailure_RedoSuccess_WithActivityTimeoutSeconds() {
+	ruleTrueID := "AlwaysTrue"
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{"FailNode"},
 		Nodes: map[string]shared.Node{
-			"FailNode": {ID: "FailNode", ActivityName: "ActivityThatCanFail", Params: map[string]interface{}{"id": "FailNode"}, RedoCondition: "on_failure", ActivityTimeoutSeconds: 10, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: "SuccessNode"}}},
+			"FailNode": {ID: "FailNode", ActivityName: "ActivityThatCanFail", Params: map[string]interface{}{"id": "FailNode"}, RedoCondition: "on_failure", ActivityTimeoutSeconds: 10, NextNodeRules: []shared.NextNodeRule{{RuleID: ruleTrueID, TargetNodeID: "SuccessNode"}}},
 			"SuccessNode": {ID: "SuccessNode", ActivityName: "SimpleSyncActivity", Params: map[string]interface{}{"id": "SuccessNode"}, Dependencies: []string{"FailNode"}},
+		},
+		Rules: map[string]shared.Rule{
+			ruleTrueID: {ID: ruleTrueID, Expression: "true"},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
@@ -125,12 +148,15 @@ func (s *UnitTestSuite) Test_NodeFailure_RedoSuccess_WithActivityTimeoutSeconds(
 }
 
 func (s *UnitTestSuite) Test_NodeActivityTimeout() {
-	nodeID, depID := "TimeoutNode", "DependentNode"
+	nodeID, depID, ruleTrueID := "TimeoutNode", "DependentNode", "AlwaysTrue"
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{nodeID},
 		Nodes: map[string]shared.Node{
-			nodeID: {ID: nodeID, ActivityName: "LongRunningActivity", ActivityTimeoutSeconds: 1, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: depID}}},
+			nodeID: {ID: nodeID, ActivityName: "LongRunningActivity", ActivityTimeoutSeconds: 1, NextNodeRules: []shared.NextNodeRule{{RuleID: ruleTrueID, TargetNodeID: depID}}},
 			depID:  {ID: depID, ActivityName: "SimpleSyncActivity", Dependencies: []string{nodeID}},
+		},
+		Rules: map[string]shared.Rule{
+			ruleTrueID: {ID: ruleTrueID, Expression: "true"},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
@@ -148,13 +174,16 @@ func (s *UnitTestSuite) Test_NodeActivityTimeout() {
 
 func (s *UnitTestSuite) Test_NodeExpiry_BeforeActivityStart() {
 	s.env.SetStartTime(time.Now())
-	nodeA, nodeToExpire, nodeC := "A", "ExpireNode", "C"
+	nodeA, nodeToExpire, nodeC, ruleTrueID := "A", "ExpireNode", "C", "AlwaysTrue"
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{nodeA},
 		Nodes: map[string]shared.Node{
-			nodeA:        {ID: nodeA, ActivityName: "ShortActivity", NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: nodeToExpire}}},
-			nodeToExpire: {ID: nodeToExpire, ActivityName: "NeverRunActivity", Dependencies: []string{nodeA}, ExpirySeconds: 2, NextNodeRules: []shared.NextNodeRule{{Condition: "true", TargetNodeID: nodeC}}},
+			nodeA:        {ID: nodeA, ActivityName: "ShortActivity", NextNodeRules: []shared.NextNodeRule{{RuleID: ruleTrueID, TargetNodeID: nodeToExpire}}},
+			nodeToExpire: {ID: nodeToExpire, ActivityName: "NeverRunActivity", Dependencies: []string{nodeA}, ExpirySeconds: 2, NextNodeRules: []shared.NextNodeRule{{RuleID: ruleTrueID, TargetNodeID: nodeC}}},
 			nodeC:        {ID: nodeC, ActivityName: "SimpleSyncActivity", Dependencies: []string{nodeToExpire}},
+		},
+		Rules: map[string]shared.Rule{
+			ruleTrueID: {ID: ruleTrueID, Expression: "true"},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
@@ -174,22 +203,26 @@ func (s *UnitTestSuite) Test_NodeExpiry_BeforeActivityStart() {
 // --- New Test Cases ---
 
 func (s *UnitTestSuite) Test_ConditionalPath_Path1Taken() {
+	rulePath1ID, rulePath2ID := "Path1Rule", "Path2Rule"
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{"Start"},
 		Nodes: map[string]shared.Node{
 			"Start": {ID: "Start", ActivityName: "DecisionActivity", Params: map[string]interface{}{"choice": "path1"},
 				NextNodeRules: []shared.NextNodeRule{
-					{Condition: "output.decision == 'PATH1'", TargetNodeID: "Path1Node"},
-					{Condition: "output.decision == 'PATH2'", TargetNodeID: "Path2Node"},
+					{RuleID: rulePath1ID, TargetNodeID: "Path1Node"},
+					{RuleID: rulePath2ID, TargetNodeID: "Path2Node"},
 				}},
 			"Path1Node": {ID: "Path1Node", ActivityName: "Path1Activity", Dependencies: []string{"Start"}},
 			"Path2Node": {ID: "Path2Node", ActivityName: "Path2Activity", Dependencies: []string{"Start"}},
+		},
+		Rules: map[string]shared.Rule{
+			rulePath1ID: {ID: rulePath1ID, Expression: "output.decision == 'PATH1'"},
+			rulePath2ID: {ID: rulePath2ID, Expression: "output.decision == 'PATH2'"},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
 	s.env.OnActivity("DecisionActivity", mock.Anything, mock.Anything).Return(map[string]interface{}{"decision": "PATH1"}, nil).Once()
 	s.env.OnActivity("Path1Activity", mock.Anything, mock.Anything).Return("Path1 Output", nil).Once()
-	// Path2Activity should not be called
 
 	s.env.ExecuteWorkflow(DAGWorkflow, input)
 	s.True(s.env.IsWorkflowCompleted())
@@ -216,19 +249,17 @@ func (s *UnitTestSuite) Test_UserInputNode_ReceivesSignal() {
 				Params:       map[string]interface{}{"original_param": "original_value"},
 			},
 		},
+		Rules: make(map[string]shared.Rule), // Initialize empty rules map
 	}
 	input := DAGWorkflowInput{Config: config}
-
-	// Activity is called after signal, with merged params
 	expectedParams := map[string]interface{}{"original_param": "original_value", "signal_data": "important_value"}
 	s.env.OnActivity("PostSignalActivity", mock.Anything, expectedParams).Return("Activity Done", nil).Once()
 
 	s.env.RegisterDelayedCallback(func() {
 		s.env.SignalWorkflow(signalName, signalPayload)
-	}, 1*time.Second) // Send signal after workflow starts and is waiting
+	}, 1*time.Millisecond) // Shortened delay for test speed
 
 	s.env.ExecuteWorkflow(DAGWorkflow, input)
-
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
 	var results map[string]interface{}
@@ -237,10 +268,8 @@ func (s *UnitTestSuite) Test_UserInputNode_ReceivesSignal() {
 }
 
 func (s *UnitTestSuite) Test_ResultValidity_DependentCompletesInTime() {
-	sourceNodeID := "SourceValidityNode"
-	dependentNodeID := "DependentSignalNode"
-	sourceSignal := "SourceSignal"
-	dependentSignal := "DependentSignal"
+	sourceNodeID, dependentNodeID, sourceSignal, dependentSignal, ruleTrueID :=
+		"SourceValidityNode", "DependentSignalNode", "SourceSignal", "DependentSignal", "AlwaysTrue"
 
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{sourceNodeID},
@@ -250,9 +279,9 @@ func (s *UnitTestSuite) Test_ResultValidity_DependentCompletesInTime() {
 				Type:                  shared.NodeTypeUserInput,
 				ActivityName:          "SimpleSyncActivity",
 				SignalName:            sourceSignal,
-				ResultValiditySeconds: 5, // Result valid for 5 virtual seconds
+				ResultValiditySeconds: 5,
 				Params:                map[string]interface{}{"id": sourceNodeID},
-				NextNodeRules:         []shared.NextNodeRule{{Condition: "true", TargetNodeID: dependentNodeID}},
+				NextNodeRules:         []shared.NextNodeRule{{RuleID: ruleTrueID, TargetNodeID: dependentNodeID}},
 			},
 			dependentNodeID: {
 				ID:           dependentNodeID,
@@ -263,40 +292,30 @@ func (s *UnitTestSuite) Test_ResultValidity_DependentCompletesInTime() {
 				Dependencies: []string{sourceNodeID},
 			},
 		},
+		Rules: map[string]shared.Rule{
+			ruleTrueID: {ID: ruleTrueID, Expression: "true"},
+		},
 	}
 	input := DAGWorkflowInput{Config: config}
 
-	// Source node activity
-	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"id": sourceNodeID, "signal_data_source": "src_done"}).Return("SourceOutput", nil).Once()
-	// Dependent node activity
-	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"id": dependentNodeID, "signal_data_dependent": "dep_done"}).Return("DependentOutput", nil).Once()
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, mock.MatchedBy(func(params map[string]interface{}) bool { return params["id"] == sourceNodeID })).Return("SourceOutput", nil).Once()
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, mock.MatchedBy(func(params map[string]interface{}) bool { return params["id"] == dependentNodeID })).Return("DependentOutput", nil).Once()
 
-	// Schedule signals
-	s.env.RegisterDelayedCallback(func() { // Signal for SourceNode
-		s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"signal_data_source": "src_done"})
-	}, 1*time.Second)
-
-	s.env.RegisterDelayedCallback(func() { // Signal for DependentNode, well within validity period
-		s.env.SignalWorkflow(dependentSignal, map[string]interface{}{"signal_data_dependent": "dep_done"})
-		s.env.AdvanceTime(1 * time.Second) // Ensure dependent processing happens
-	}, 2*time.Second) // Send this after source signal, but before validity (5s) expires
+	s.env.RegisterDelayedCallback(func() { s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"sdata": "src"}) }, 1*time.Millisecond)
+	s.env.RegisterDelayedCallback(func() { s.env.SignalWorkflow(dependentSignal, map[string]interface{}{"sdata": "dep"}) }, 2*time.Millisecond)
 
 	s.env.ExecuteWorkflow(DAGWorkflow, input)
-
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
 	var results map[string]interface{}
 	s.NoError(s.env.GetWorkflowResult(&results))
 	s.Equal("SourceOutput", results[sourceNodeID])
 	s.Equal("DependentOutput", results[dependentNodeID])
-	// Implicitly, test passes if no redo occurs and workflow completes normally.
 }
 
 func (s *UnitTestSuite) Test_ResultValidity_TimerFires_ResetsNodes() {
-	sourceNodeID := "SourceStaleNode"
-	dependentNodeID := "DependentWaitsTooLongNode"
-	sourceSignal := "SourceStaleSignal"
-	dependentSignal := "Dep αργείSignal" // Greek for "late" :)
+	sourceNodeID, dependentNodeID, sourceSignal, dependentSignal, ruleTrueID :=
+		"SourceStaleNode", "DependentWaitsTooLongNode", "SourceStaleSignal", "DepWaitsSignal", "AlwaysTrue"
 
 	config := shared.WorkflowConfig{
 		StartNodeIDs: []string{sourceNodeID},
@@ -304,52 +323,54 @@ func (s *UnitTestSuite) Test_ResultValidity_TimerFires_ResetsNodes() {
 			sourceNodeID: {
 				ID:                    sourceNodeID,
 				Type:                  shared.NodeTypeUserInput,
-				ActivityName:          "SimpleSyncActivity", // Activity name for the source
+				ActivityName:          "SimpleSyncActivity",
 				SignalName:            sourceSignal,
-				ResultValiditySeconds: 2, // Short validity
-				Params:                map[string]interface{}{"id": sourceNodeID, "attempt": 1},
-				NextNodeRules:         []shared.NextNodeRule{{Condition: "true", TargetNodeID: dependentNodeID}},
+				ResultValiditySeconds: 2,
+				Params:                map[string]interface{}{"id": sourceNodeID}, // Attempt will be tracked by workflow
+				NextNodeRules:         []shared.NextNodeRule{{RuleID: ruleTrueID, TargetNodeID: dependentNodeID}},
 			},
 			dependentNodeID: {
 				ID:           dependentNodeID,
 				Type:         shared.NodeTypeUserInput,
-				ActivityName: "SimpleSyncActivity", // Activity name for the dependent
+				ActivityName: "SimpleSyncActivity",
 				SignalName:   dependentSignal,
-				Params:       map[string]interface{}{"id": dependentNodeID, "attempt": 1},
+				Params:       map[string]interface{}{"id": dependentNodeID},
 				Dependencies: []string{sourceNodeID},
 			},
+		},
+		Rules: map[string]shared.Rule{
+			ruleTrueID: {ID: ruleTrueID, Expression: "true"},
 		},
 	}
 	input := DAGWorkflowInput{Config: config}
 
 	// --- Attempt 1 Mocks ---
-	// Source node (1st attempt) - activity completes
-	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"id": sourceNodeID, "attempt": 1, "signal_for_attempt1_source": true}).Return("SourceOutput_Attempt1", nil).Once()
-	// Dependent node (1st attempt) - its signal will be delayed, so its activity won't run in 1st attempt.
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, mock.MatchedBy(func(params map[string]interface{}) bool {
+		return params["id"] == sourceNodeID && params["signal_for_attempt1_source"] == true
+	})).Return("SourceOutput_Attempt1", nil).Once()
 
 	// --- Attempt 2 Mocks (after reset due to validity timer) ---
-	// Source node (2nd attempt) - activity completes
-	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"id": sourceNodeID, "attempt": 2, "signal_for_attempt2_source": true}).Return("SourceOutput_Attempt2", nil).Once()
-	// Dependent node (2nd attempt) - activity completes
-	s.env.OnActivity("SimpleSyncActivity", mock.Anything, map[string]interface{}{"id": dependentNodeID, "attempt": 1, "signal_for_attempt2_dependent": true}).Return("DependentOutput_Attempt2", nil).Once()
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, mock.MatchedBy(func(params map[string]interface{}) bool {
+		return params["id"] == sourceNodeID && params["signal_for_attempt2_source"] == true
+	})).Return("SourceOutput_Attempt2", nil).Once()
+	s.env.OnActivity("SimpleSyncActivity", mock.Anything, mock.MatchedBy(func(params map[string]interface{}) bool {
+		return params["id"] == dependentNodeID && params["signal_for_attempt2_dependent"] == true
+	})).Return("DependentOutput_Attempt2", nil).Once()
 
+	s.env.ExecuteWorkflow(DAGWorkflow, input)
 
-	// Workflow Execution
-	s.env.ExecuteWorkflow(DAGWorkflow, input) // Start workflow
-
-	// Signal for SourceNode (Attempt 1)
 	s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"signal_for_attempt1_source": true})
-	s.env.AssertExpectations(s.T()) // Check if source activity (1st attempt) ran
+	// Wait for activity to complete & timer to be set. A small advance helps here.
+	s.env.AdvanceTime(100 * time.Millisecond)
 
-	// Advance time PAST ResultValiditySeconds (2s) + some buffer
-	s.env.AdvanceTime(3 * time.Second) // This should trigger the timer and reset.
 
-	// Now, signal for the nodes again (Attempt 2 for source, Attempt 1 for dependent but effectively 2nd round)
-	s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"signal_for_attempt2_source": true, "attempt": 2}) // Send attempt in signal for mock
-	s.env.AssertExpectations(s.T()) // Check source activity (2nd attempt)
+	s.env.AdvanceTime(3 * time.Second) // Trigger validity timer (2s) and reset.
 
-	s.env.SignalWorkflow(dependentSignal, map[string]interface{}{"signal_for_attempt2_dependent": true, "attempt": 1})// Send attempt in signal for mock
-	s.env.AssertExpectations(s.T()) // Check dependent activity (2nd attempt)
+	s.env.SignalWorkflow(sourceSignal, map[string]interface{}{"signal_for_attempt2_source": true})
+	s.env.AdvanceTime(100 * time.Millisecond)
+
+	s.env.SignalWorkflow(dependentSignal, map[string]interface{}{"signal_for_attempt2_dependent": true})
+	s.env.AdvanceTime(100 * time.Millisecond)
 
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
@@ -358,21 +379,4 @@ func (s *UnitTestSuite) Test_ResultValidity_TimerFires_ResetsNodes() {
 	s.NoError(s.env.GetWorkflowResult(&results))
 	s.Equal("SourceOutput_Attempt2", results[sourceNodeID])
 	s.Equal("DependentOutput_Attempt2", results[dependentNodeID])
-}
-
-// Mock activity names used in configs if they aren't real activity functions
-// For simplicity, some tests use generic names like "Path1Activity".
-// If these were actual activities, they'd be registered from activities package.
-// For testsuite, if a mock is set up for an activity name, it doesn't strictly need
-// a real registered function, but it's good practice if possible.
-// Placeholder registration for activities only named in tests:
-func init() {
-	// This is a bit of a hack for test suite. Usually, you register actual functions.
-	// If an activity is *only* mocked and never called "for real", this isn't strictly needed.
-	// But if a test config uses an activity name that has no real counterpart and isn't mocked,
-	// the workflow would fail to find it.
-	activity.Register(func(ctx context.Context, params map[string]interface{}) (map[string]interface{}, error) { return map[string]interface{}{"decision": "PATH1"}, nil }, "DecisionActivity")
-	activity.Register(func(ctx context.Context) (string, error) { return "Path1 Output", nil }, "Path1Activity")
-	activity.Register(func(ctx context.Context) (string, error) { return "Path2 Output", nil }, "Path2Activity")
-	activity.Register(func(ctx context.Context, params map[string]interface{}) (string, error) { return "Activity Done", nil }, "PostSignalActivity")
 }

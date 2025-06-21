@@ -1,0 +1,44 @@
+# Reusable Rule Definitions for Dynamic DAG Workflow
+
+rules:
+  IsResultCode1:
+    id: IsResultCode1 # Must match the key for easy lookup if loaded as map
+    expression: "output.result_code == 1"
+    description: "Checks if the activity output map contains a key 'result_code' with value 1."
+
+  IsResultCode2:
+    id: IsResultCode2
+    expression: "output.result_code == 2"
+    description: "Checks if the activity output map contains a key 'result_code' with value 2."
+
+  IsApproved:
+    id: IsApproved
+    expression: "output.approved == true"
+    description: "Checks if the activity output map contains a key 'approved' with boolean value true."
+
+  IsRejected:
+    id: IsRejected
+    expression: "output.approved == false" # Assuming 'approved' key exists and is boolean
+    description: "Checks if the activity output map contains a key 'approved' with boolean value false."
+
+  CheckParamInitialChoice3:
+    id: CheckParamInitialChoice3
+    expression: "params.initial_branch_choice == 3"
+    description: "Checks if the node's initial parameter 'initial_branch_choice' is 3."
+
+  AlwaysTrue:
+    id: AlwaysTrue
+    expression: "true"
+    description: "An unconditional rule that always evaluates to true. Useful for default paths."
+
+  # Example of a rule that might check a string output directly
+  IsOutputStatusSuccess:
+    id: IsOutputStatusSuccess
+    expression: "output == 'SUCCESS'"
+    description: "Checks if the direct string output of an activity is 'SUCCESS'."
+
+  # Example for a parameter check
+  IsParamCategoryX:
+    id: IsParamCategoryX
+    expression: "params.category == 'X'"
+    description: "Checks if the node parameter 'category' is 'X'."

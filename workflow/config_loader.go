@@ -26,32 +26,107 @@ func validateWorkflowConfig(config *shared.WorkflowConfig) error {
 	// - Validate that SignalName is non-empty for UserInput node types.
 	// - Validate that TargetNodeID in NextNodeRules exist in Nodes map.
 	// - Ensure dependencies listed in Node.Dependencies exist in Nodes map.
+
+	// Validate RuleIDs in NextNodeRules
+	for nodeID, node := range config.Nodes {
+		for i, ruleRef := range node.NextNodeRules {
+			if ruleRef.RuleID == "" {
+				return fmt.Errorf("node '%s', nextNodeRule #%d: RuleID is empty", nodeID, i)
+			}
+			if config.Rules == nil { // Should not happen if loader initializes it
+				return fmt.Errorf("node '%s', nextNodeRule #%d: WorkflowConfig.Rules is nil, cannot validate RuleID '%s'", nodeID, i, ruleRef.RuleID)
+			}
+			if _, ok := config.Rules[ruleRef.RuleID]; !ok {
+				return fmt.Errorf("node '%s', nextNodeRule #%d: RuleID '%s' not found in defined Rules", nodeID, i, ruleRef.RuleID)
+			}
+			if _, ok := config.Nodes[ruleRef.TargetNodeID]; !ok {
+                 return fmt.Errorf("node '%s', nextNodeRule #%d (RuleID '%s'): TargetNodeID '%s' not found in defined Nodes", nodeID, i, ruleRef.RuleID, ruleRef.TargetNodeID)
+            }
+		}
+		// Validate static dependencies exist
+		for i, depID := range node.Dependencies {
+			if _, ok := config.Nodes[depID]; !ok {
+				return fmt.Errorf("node '%s', dependency #%d: NodeID '%s' not found in defined Nodes", nodeID, i, depID)
+			}
+		}
+	}
+
 	return nil
 }
 
 // LoadWorkflowConfigFromJSONBytes parses JSON bytes into a WorkflowConfig struct.
+// Note: Does not load external rules by default.
 func LoadWorkflowConfigFromJSONBytes(jsonData []byte) (shared.WorkflowConfig, error) {
 	var config shared.WorkflowConfig
 	err := json.Unmarshal(jsonData, &config)
 	if err != nil {
 		return shared.WorkflowConfig{}, fmt.Errorf("failed to unmarshal workflow config JSON: %w", err)
 	}
-	if err := validateWorkflowConfig(&config); err != nil {
+	// Rules would need to be loaded separately or embedded if using JSON directly this way.
+	if err := validateWorkflowConfig(&config); err != nil { // validateWorkflowConfig will also need to check RuleIDs
 		return shared.WorkflowConfig{}, fmt.Errorf("invalid workflow config: %w", err)
 	}
 	return config, nil
 }
 
-// LoadWorkflowConfigFromYAMLBytes parses YAML bytes into a WorkflowConfig struct.
+// LoadWorkflowConfigFromYAMLBytes parses YAML bytes for the main DAG structure.
+// It does NOT load rules from a separate file; that's handled by LoadFullWorkflowConfigFromYAMLs.
 func LoadWorkflowConfigFromYAMLBytes(yamlData []byte) (shared.WorkflowConfig, error) {
 	var config shared.WorkflowConfig
 	err := yaml.Unmarshal(yamlData, &config)
 	if err != nil {
 		return shared.WorkflowConfig{}, fmt.Errorf("failed to unmarshal workflow config YAML: %w", err)
 	}
-	if err := validateWorkflowConfig(&config); err != nil {
-		return shared.WorkflowConfig{}, fmt.Errorf("invalid workflow config: %w", err)
+	if err := validateWorkflowConfig(&config); err != nil { // This validation will be enhanced
+		return shared.WorkflowConfig{}, fmt.Errorf("invalid workflow config from YAML bytes: %w", err)
 	}
+	return config, nil
+}
+
+// LoadRulesFromYAMLBytes parses YAML bytes into a map of Rule definitions.
+// Expects YAML structure like:
+// rules:
+//   RuleID1: {id: RuleID1, expression: "...", ...}
+//   RuleID2: {id: RuleID2, expression: "...", ...}
+func LoadRulesFromYAMLBytes(yamlData []byte) (map[string]shared.Rule, error) {
+	var rulesWrapper struct {
+		Rules map[string]shared.Rule `yaml:"rules"`
+	}
+	err := yaml.Unmarshal(yamlData, &rulesWrapper)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal rules YAML: %w", err)
+	}
+	// Validate that map key matches Rule.ID
+	for k, v := range rulesWrapper.Rules {
+		if k != v.ID {
+			return nil, fmt.Errorf("rule ID mismatch in YAML: map key '%s' does not match rule.ID '%s'", k, v.ID)
+		}
+	}
+	return rulesWrapper.Rules, nil
+}
+
+// LoadFullWorkflowConfigFromYAMLs loads the main DAG config and associated rules from byte slices.
+func LoadFullWorkflowConfigFromYAMLs(dagYAMLBytes []byte, rulesYAMLBytes []byte) (shared.WorkflowConfig, error) {
+	config, err := LoadWorkflowConfigFromYAMLBytes(dagYAMLBytes)
+	if err != nil {
+		return shared.WorkflowConfig{}, err // Error already descriptive
+	}
+
+	if len(rulesYAMLBytes) > 0 {
+		rules, err := LoadRulesFromYAMLBytes(rulesYAMLBytes)
+		if err != nil {
+			return shared.WorkflowConfig{}, fmt.Errorf("failed to load rules: %w", err)
+		}
+		config.Rules = rules
+	} else {
+		config.Rules = make(map[string]shared.Rule) // Ensure Rules map is initialized
+	}
+
+	// Re-validate after rules are attached, specifically for RuleID references
+	if err := validateWorkflowConfig(&config); err != nil {
+		return shared.WorkflowConfig{}, fmt.Errorf("invalid workflow config after merging rules: %w", err)
+	}
+
 	return config, nil
 }
 
