@@ -10,7 +10,7 @@ import (
 	"github.com/cucumber/godog/colors"
 
 	// We will define step definitions in a separate package, e.g., "steps"
-	"dynamicworkflow/features/steps" // Actual steps package
+	"flow-shift/features/steps" // Actual steps package
 )
 
 var opts = godog.Options{

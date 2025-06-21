@@ -2,8 +2,9 @@ package steps
 
 import (
 	"context"
-	"dynamicworkflow/shared"
-	"dynamicworkflow/workflow"
+	"errors"
+	"flow-shift/shared"
+	"flow-shift/workflow"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -498,11 +499,11 @@ func (wtc *WorkflowTestContext) aWorkflowConfigurationWithANodeHaving(nodeID str
             if v, ok := value.(int); ok { node.ActivityTimeoutSeconds = v } else { return fmt.Errorf("activityTimeoutSeconds must be int for %s", nodeID)}
         case "expirySeconds":
              if v, ok := value.(int); ok { node.ExpirySeconds = v } else { return fmt.Errorf("expirySeconds must be int for %s", nodeID)}
-        case "nextNodeRules": // Example: "true -> DependentNode"
+        case "nextNodeRules": // Example: "AlwaysTrue -> DependentNode"
             parts := strings.Split(valueStr, "->")
             if len(parts) != 2 { return fmt.Errorf("invalid nextNodeRule format: '%s'", valueStr)}
             node.NextNodeRules = append(node.NextNodeRules, shared.NextNodeRule{
-                Condition: strings.TrimSpace(parts[0]),
+                RuleID: strings.TrimSpace(parts[0]),
                 TargetNodeID: strings.TrimSpace(parts[1]),
             })
         // Add more properties as needed by tests (type, signalName, resultValiditySeconds, etc.)

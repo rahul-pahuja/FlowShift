@@ -1,7 +1,7 @@
 package workflow
 
 import (
-	"dynamicworkflow/shared"
+	"flow-shift/shared"
 	"encoding/json"
 	"fmt"
 	"gopkg.in/yaml.v3" // Added for YAML parsing

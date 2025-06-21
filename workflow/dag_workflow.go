@@ -1,12 +1,12 @@
-package workflow
+THIS SHOULD BE A LINTER ERRORpackage workflow
 
 import (
 	"errors"
 	"fmt"
 	"time"
 
-	"dynamicworkflow/shared"
-	"go.temporal.io/api/enums/v1"
+	"flow-shift/shared"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/workflow"
 	"go.uber.org/zap" // For logging
 )
@@ -109,7 +109,7 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 	findCriticalDependent := func(sourceNodeID string, sourceNode shared.Node, sourceOutput interface{}) (string, bool) {
 		if len(sourceNode.NextNodeRules) > 0 {
 			for _, rule := range sourceNode.NextNodeRules {
-				if evaluateCondition(ctx, rule.Condition, sourceNode.Params, sourceOutput) {
+				if actualRule, ok := config.Rules[rule.RuleID]; ok && evaluateCondition(ctx, actualRule.Expression, sourceNode.Params, sourceOutput) {
 					if targetNode, ok := config.Nodes[rule.TargetNodeID]; ok && targetNode.Type == shared.NodeTypeUserInput {
 						// Check if this dependent also depends *only* on the sourceNode to avoid complex multi-parent validity issues for now
 						isSimpleDependent := true
@@ -305,9 +305,6 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 			// This expiry is about the node being too old to START its activity,
 			// distinct from UserInput node expiry while waiting for signal.
 			if node.Type != shared.NodeTypeUserInput && node.ExpirySeconds > 0 { // UserInput handles its own expiry while waiting
-				expiryDuration := time.Duration(node.ExpirySeconds) * time.Second
-				scheduledTime := time.Unix(status.ScheduledTime, 0)
-				if workflow.Now(ctx).After(scheduledTime.Add(expiryDuration)) {
 				expiryDuration := time.Duration(node.ExpirySeconds) * time.Second
 				scheduledTime := time.Unix(status.ScheduledTime, 0)
 				if workflow.Now(ctx).After(scheduledTime.Add(expiryDuration)) {
@@ -598,7 +595,7 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 					// --- Conditional Path Selection (runs if node is marked complete) ---
 					if nodeStatus.State == shared.NodeStateCompleted {
 						if len(node.NextNodeRules) > 0 {
-						logger.Info("Processing NextNodeRules for completed node", zap.String("NodeID", nodeID), zap.Int("numRules", len(node.NextNodeRules)))
+							logger.Info("Processing NextNodeRules for completed node", zap.String("NodeID", nodeID), zap.Int("numRules", len(node.NextNodeRules)))
 						for _, ruleRef := range node.NextNodeRules { // ruleRef is of type shared.NextNodeRule
 							actualRule, ruleExists := config.Rules[ruleRef.RuleID]
 							if !ruleExists {
@@ -616,9 +613,9 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 									zap.String("RuleID", ruleRef.RuleID),
 									zap.String("Expression", actualRule.Expression))
 
-								if _, ok := dependencyCount[rule.TargetNodeID]; ok {
+								if _, ok := dependencyCount[ruleRef.TargetNodeID]; ok {
 									isDeclaredDependency := false
-									if targetNodeConfig, okConfig := config.Nodes[rule.TargetNodeID]; okConfig {
+									if targetNodeConfig, okConfig := config.Nodes[ruleRef.TargetNodeID]; okConfig {
 										for _, dep := range targetNodeConfig.Dependencies {
 											if dep == nodeID {
 												isDeclaredDependency = true
@@ -628,15 +625,15 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 									}
 
 									if isDeclaredDependency {
-										dependencyCount[rule.TargetNodeID]--
+										dependencyCount[ruleRef.TargetNodeID]--
 										logger.Info("Dependency count for target node updated",
-											zap.String("TargetNodeID", rule.TargetNodeID),
-											zap.Int("NewDepCount", dependencyCount[rule.TargetNodeID]))
+											zap.String("TargetNodeID", ruleRef.TargetNodeID),
+											zap.Int("NewDepCount", dependencyCount[ruleRef.TargetNodeID]))
 
-										if dependencyCount[rule.TargetNodeID] == 0 && nodeStatuses[rule.TargetNodeID].State == shared.NodeStatePending {
-											logger.Info("All dependencies met for conditional target node, adding to ready queue", zap.String("NodeID", rule.TargetNodeID))
-											nodeStatuses[rule.TargetNodeID].ScheduledTime = workflow.Now(ctx).Unix()
-											readyQueue <- rule.TargetNodeID
+										if dependencyCount[ruleRef.TargetNodeID] == 0 && nodeStatuses[ruleRef.TargetNodeID].State == shared.NodeStatePending {
+											logger.Info("All dependencies met for conditional target node, adding to ready queue", zap.String("NodeID", ruleRef.TargetNodeID))
+											nodeStatuses[ruleRef.TargetNodeID].ScheduledTime = workflow.Now(ctx).Unix()
+											readyQueue <- ruleRef.TargetNodeID
 										}
 									} else {
 										// This rule targets a node that doesn't declare the current node as a direct dependency.
@@ -645,19 +642,19 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 										// This could be a point of future enhancement for fully dynamic edges.
 										logger.Warn("Conditional rule targets node that does not list current node as a static dependency. Ignoring for readiness.",
 											zap.String("SourceNodeID", nodeID),
-											zap.String("TargetNodeID", rule.TargetNodeID))
+											zap.String("TargetNodeID", ruleRef.TargetNodeID))
 									}
 								} else {
-									logger.Warn("Conditional rule targeted a node not in dependency count map", zap.String("TargetNodeID", rule.TargetNodeID))
+									logger.Warn("Conditional rule targeted a node not in dependency count map", zap.String("TargetNodeID", ruleRef.TargetNodeID))
 								}
 							} else {
 								logger.Debug("Condition NOT met for rule",
 									zap.String("SourceNodeID", nodeID),
-									zap.String("TargetNodeID", rule.TargetNodeID),
-									zap.String("Condition", rule.Condition))
+									zap.String("TargetNodeID", ruleRef.TargetNodeID),
+									zap.String("RuleID", ruleRef.RuleID))
 							}
 						}
-					} else {
+						} else {
 						// Original behavior: propagate to all statically declared dependents if no rules.
 						// This assumes dependentsMap is built from Node.Dependencies.
 						logger.Info("No NextNodeRules, propagating to statically declared dependents", zap.String("NodeID", nodeID))
@@ -668,6 +665,7 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 								nodeStatuses[dependentID].ScheduledTime = workflow.Now(ctx).Unix()
 								readyQueue <- dependentID
 							}
+						}
 						}
 					}
 				}

@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"dynamicworkflow/activities"
-	"dynamicworkflow/shared"
-	"dynamicworkflow/workflow"
+	"flow-shift/activities"
+	"flow-shift/shared"
+	"flow-shift/workflow"
 	"log"
 	"os"
 	"time"

@@ -17,7 +17,7 @@ import (
 // This is a very basic evaluator and can be replaced with a proper expression language engine.
 func evaluateCondition(ctx workflow.Context, conditionStr string, nodeParams map[string]interface{}, activityOutput interface{}) bool {
 	logger := workflow.GetLogger(ctx)
-	conditionStr = strings.trimSpace(conditionStr)
+	conditionStr = strings.TrimSpace(conditionStr)
 
 	if conditionStr == "" || conditionStr == "true" {
 		return true
@@ -29,8 +29,8 @@ func evaluateCondition(ctx workflow.Context, conditionStr string, nodeParams map
 		return false
 	}
 
-	lhs := strings.trimSpace(parts[0])
-	rhs := strings.trimSpace(parts[1])
+	lhs := strings.TrimSpace(parts[0])
+	rhs := strings.TrimSpace(parts[1])
 
 	// Remove surrounding quotes from rhs if present
 	if (strings.HasPrefix(rhs, "'") && strings.HasSuffix(rhs, "'")) ||
