@@ -1,4 +1,4 @@
-THIS SHOULD BE A LINTER ERRORpackage workflow
+package workflow
 
 import (
 	"errors"
@@ -7,6 +7,7 @@ import (
 
 	"flow-shift/shared"
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 	"go.uber.org/zap" // For logging
 )
@@ -185,7 +186,7 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 						readyQueue <- dependentID
 					}
 				}
-				return // Do not proceed to expiry check or execution for this skipped node
+				continue // Do not proceed to expiry check or execution for this skipped node
 			}
 
 			// If not skipped, proceed to set state to Running and check expiry etc.
@@ -205,7 +206,7 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 						errAggregator = status.Error
 					}
 					// TODO: Consider if dependents should be processed here or if this failure halts the path
-					return // Exit this goroutine for the node
+					continue // Exit this goroutine for the node
 				}
 
 				logger.Info("Node is UserInput type, waiting for signal", zap.String("NodeID", nodeID), zap.String("SignalName", node.SignalName))
@@ -218,12 +219,15 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 				// Loop with select to allow timer for expiry while waiting for signal
 				// This is a simplified expiry check during signal wait. A more robust one might involve a dedicated timer future in the main selector.
 				var expiryTimerFuture workflow.Future
+				var expiryTimerCtx workflow.Context
+				var expiryTimerCancel workflow.CancelFunc
 				if node.ExpirySeconds > 0 {
 					scheduledTime := time.Unix(status.ScheduledTime, 0) // Time it became ready for signal
 					expiryDuration := time.Duration(node.ExpirySeconds) * time.Second
 					timeUntilExpiry := scheduledTime.Add(expiryDuration).Sub(workflow.Now(ctx))
 					if timeUntilExpiry > 0 {
-						expiryTimerFuture = workflow.NewTimer(ctx, timeUntilExpiry)
+						expiryTimerCtx, expiryTimerCancel = workflow.WithCancel(ctx)
+						expiryTimerFuture = workflow.NewTimer(expiryTimerCtx, timeUntilExpiry)
 					} else {
 						// Already expired
 						logger.Warn("UserInput node expired while attempting to wait for signal", zap.String("NodeID", nodeID))
@@ -239,7 +243,7 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 				}
 
 				selectorForSignal := workflow.NewSelector(ctx)
-				selectorForSignal.AddReceive(signalChan, func(c workflow.Channel, more bool) {
+				selectorForSignal.AddReceive(signalChan, func(c workflow.ReceiveChannel, more bool) {
 					if !more { // Channel closed
 						logger.Warn("Signal channel closed for UserInput node", zap.String("NodeID", nodeID), zap.String("SignalName", node.SignalName))
 						status.Error = fmt.Errorf("signal channel %s closed for node %s", node.SignalName, nodeID)
@@ -249,8 +253,8 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 					c.Receive(ctx, &signalData)
 					logger.Info("Signal received for UserInput node", zap.String("NodeID", nodeID), zap.String("SignalName", node.SignalName), zap.Any("SignalData", signalData))
 					signalReceived = true
-					if expiryTimerFuture != nil { // Cancel expiry timer if signal received
-						expiryTimerFuture.Cancel()
+					if expiryTimerCancel != nil { // Cancel expiry timer if signal received
+						expiryTimerCancel()
 					}
 				})
 
@@ -282,7 +286,7 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 						errAggregator = status.Error
 					}
 					// TODO: Propagate to dependents
-					return // Exit this goroutine for the node
+					return nodeResults, errAggregator // Exit this goroutine for the node
 				}
 
 				// Merge signalData into node.Params if signalData is a map
@@ -333,7 +337,7 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 							readyQueue <- dependentID
 						}
 					}
-					return // Skip activity execution for this expired node
+					return nodeResults, errAggregator // Skip activity execution for this expired node
 				}
 			}
 
@@ -343,8 +347,8 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 				HeartbeatTimeout:    0,                // Optional: set if activities heartbeat
 				// RetryPolicy can be set here if not handled by specific redo logic
 			}
-			if node.TTLSeconds > 0 {
-				activityOpts.StartToCloseTimeout = time.Duration(node.TTLSeconds) * time.Second
+			if node.ActivityTimeoutSeconds > 0 {
+				activityOpts.StartToCloseTimeout = time.Duration(node.ActivityTimeoutSeconds) * time.Second
 			}
 			// For activities that heartbeat (like WaitActivityExample), set HeartbeatTimeout
 			// This should ideally be based on the activity type or specific node config.
@@ -365,11 +369,11 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 
 				if err != nil {
 					logger.Error("Activity execution failed", zap.String("NodeID", nodeID), zap.Error(err))
-					// Check for TTL timeout
-					var timeoutErr *workflow.TimeoutError
-					if workflow.IsTimeoutError(err) && errors.As(err, &timeoutErr) && timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_START_TO_CLOSE {
+					// Check for activity timeout
+					var timeoutErr *temporal.TimeoutError
+					if temporal.IsTimeoutError(err) && errors.As(err, &timeoutErr) && timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_START_TO_CLOSE {
 						status.State = shared.NodeStateTimedOut
-						logger.Warn("Activity timed out (TTL)", zap.String("NodeID", nodeID), zap.Error(err))
+						logger.Warn("Activity timed out", zap.String("NodeID", nodeID), zap.Error(err))
 					} else {
 						status.State = shared.NodeStateFailed
 					}

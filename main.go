@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flow-shift/activities"
-	"flow-shift/shared"
 	"flow-shift/workflow"
 	"log"
 	"os"

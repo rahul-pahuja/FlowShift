@@ -151,7 +151,7 @@ func GetSampleWorkflowConfigJSON() string {
 				ActivityName: "SimpleSyncActivity",
 				Params:       map[string]interface{}{"message": "Node A executed"},
 				Dependencies: []string{},
-				TTLSeconds:   60,
+				ActivityTimeoutSeconds:   60,
 			},
 			"B": {
 				ID:           "B",
@@ -159,7 +159,7 @@ func GetSampleWorkflowConfigJSON() string {
 				ActivityName: "SimpleSyncActivity",
 				Params:       map[string]interface{}{"message": "Node B executed"},
 				Dependencies: []string{"A"},
-				TTLSeconds:   60,
+				ActivityTimeoutSeconds:   60,
 			},
 			"C": {
 				ID:           "C",
@@ -167,7 +167,7 @@ func GetSampleWorkflowConfigJSON() string {
 				ActivityName: "AsyncActivityExample",
 				Params:       map[string]interface{}{"message": "Node C executed", "_skip": false},
 				Dependencies: []string{"A"},
-				TTLSeconds:   120,
+				ActivityTimeoutSeconds:   120,
 			},
 			"D": {
 				ID:           "D",
@@ -175,7 +175,7 @@ func GetSampleWorkflowConfigJSON() string {
 				ActivityName: "SimpleSyncActivity",
 				Params:       map[string]interface{}{"message": "Node D executed"},
 				Dependencies: []string{"B"},
-				TTLSeconds:   30,
+				ActivityTimeoutSeconds:   30,
 			},
 			"E": {
 				ID:           "E",
@@ -183,7 +183,7 @@ func GetSampleWorkflowConfigJSON() string {
 				ActivityName: "WaitActivityExample",
 				Params:       map[string]interface{}{"message": "Node E executed", "duration": 5},
 				Dependencies: []string{"C"},
-				TTLSeconds:   180, // Needs to be > wait duration + heartbeat overhead
+				ActivityTimeoutSeconds:   180, // Needs to be > wait duration + heartbeat overhead
 				ExpirySeconds: 300, // Node E itself can expire if not started within 5 mins
 			},
 			"F": {
@@ -192,7 +192,7 @@ func GetSampleWorkflowConfigJSON() string {
 				ActivityName: "ActivityThatCanFail",
 				Params:       map[string]interface{}{"message": "Node F executed", "forceFail": true},
 				Dependencies: []string{},
-				TTLSeconds:   60,
+				ActivityTimeoutSeconds:   60,
 				RedoCondition: "on_failure",
 			},
 			"G_skipped": { // Node to demonstrate skip
