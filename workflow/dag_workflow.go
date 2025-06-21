@@ -234,7 +234,7 @@ func DAGWorkflow(ctx workflow.Context, input DAGWorkflowInput) (map[string]inter
 						numProcessingNodes--
 						if errAggregator == nil { errAggregator = status.Error }
 						// TODO: Propagate to dependents if necessary for this type of expiry
-						return
+						return nodeResults, errAggregator
 					}
 				}
 

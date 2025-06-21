@@ -45,7 +45,6 @@ type Node struct {
 	Params                map[string]interface{} `json:"params"`
 	Dependencies          []string               `json:"dependencies"` // Prerequisites for this node to start
 	ActivityTimeoutSeconds int                    `json:"activityTimeoutSeconds"` // Timeout for the node's activity execution
-	TTLSeconds            int                    `json:"ttlSeconds"`             // Time to live for the activity execution 
 	ResultValiditySeconds int                    `json:"resultValiditySeconds"`  // How long the node's result is considered valid
 	ExpirySeconds         int                    `json:"expirySeconds"`          // Expiry for the node itself before it starts (original meaning)
 	RedoCondition         string                 `json:"redoCondition"`          // e.g., "output.status == 'failed'"
