@@ -2,9 +2,8 @@ package main
 
 import (
 	"context"
-	"dynamicworkflow/activities"
-	"dynamicworkflow/shared"
-	"dynamicworkflow/workflow"
+	"flow-shift/activities"
+	"flow-shift/workflow"
 	"log"
 	"os"
 	"time"
@@ -30,7 +29,6 @@ func main() {
 	// Create Temporal client
 	temporalClient, err := client.Dial(client.Options{
 		HostPort: client.DefaultHostPort, // Connects to localhost:7233 or TEMPORAL_GRPC_ENDPOINT
-		Logger:   logger,                 // Use our structured logger
 	})
 	if err != nil {
 		logger.Fatal("Unable to create Temporal client", zap.Error(err))

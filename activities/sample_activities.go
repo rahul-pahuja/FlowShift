@@ -10,7 +10,7 @@ import (
 )
 
 // SimpleSyncActivity is a basic synchronous activity.
-func SimpleSyncActivity(ctx context.Context, params map[string]interface{}) (string, error) {
+func SimpleSyncActivity(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 	logger := activity.GetLogger(ctx)
 	activityName := "SimpleSyncActivity" // Or get from activity.GetInfo(ctx).ActivityType.Name
 	logger.Info("Executing SimpleSyncActivity", zap.Any("params", params))
@@ -28,7 +28,7 @@ func SimpleSyncActivity(ctx context.Context, params map[string]interface{}) (str
 // before the logical work is done, and another process completes it later using a task token.
 // This example will just be a synchronous execution for now, as true async completion
 // requires external interaction.
-func AsyncActivityExample(ctx context.Context, params map[string]interface{}) (string, error) {
+func AsyncActivityExample(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 	logger := activity.GetLogger(ctx)
 	activityName := "AsyncActivityExample"
 	logger.Info("Executing AsyncActivityExample", zap.Any("params", params))
@@ -43,7 +43,7 @@ func AsyncActivityExample(ctx context.Context, params map[string]interface{}) (s
 
 // WaitActivityExample simulates an activity that waits for a condition or time.
 // In a real scenario, this might involve polling or waiting for an external signal.
-func WaitActivityExample(ctx context.Context, params map[string]interface{}) (string, error) {
+func WaitActivityExample(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 	logger := activity.GetLogger(ctx)
 	activityName := "WaitActivityExample"
 	logger.Info("Executing WaitActivityExample", zap.Any("params", params), zap.Duration("waitTime", 5*time.Second))
@@ -88,7 +88,7 @@ func WaitActivityExample(ctx context.Context, params map[string]interface{}) (st
 }
 
 // ActivityThatCanFail demonstrates an activity that might fail, for testing redo logic.
-func ActivityThatCanFail(ctx context.Context, params map[string]interface{}) (string, error) {
+func ActivityThatCanFail(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 	logger := activity.GetLogger(ctx)
 	activityName := "ActivityThatCanFail"
 	logger.Info("Executing ActivityThatCanFail", zap.Any("params", params))
